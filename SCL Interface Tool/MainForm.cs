@@ -387,7 +387,7 @@ namespace SCL_Interface_Tool
             _dgvElements.ContextMenuStrip = menu;
         }
 
-        private void BtnParse_Click(object sender, EventArgs e)
+        private async void BtnParse_Click(object sender, EventArgs e)
         {
             _lstErrors.Items.Clear();
             _cmbBlocks.Items.Clear();
@@ -397,28 +397,45 @@ namespace SCL_Interface_Tool
             string sclText = _rtbInput.Text;
             if (string.IsNullOrWhiteSpace(sclText)) return;
 
-            _parsedBlocks = _parser.Parse(sclText, out List<string> errors);
-            foreach (var err in errors) _lstErrors.Items.Add(err);
+            // Show a loading state here if desired (e.g., change cursor)
+            Cursor = Cursors.WaitCursor;
 
-            if (_parsedBlocks.Count == 0) return;
-
-            _lstErrors.Items.Add($"Successfully parsed {_parsedBlocks.Count} block(s).");
-
-            // Adjust ComboBox width to fit longest block name
-            int maxCmbWidth = _cmbBlocks.Width;
-            using (Graphics g = _cmbBlocks.CreateGraphics())
+            try
             {
-                foreach (var block in _parsedBlocks)
+                // Offload heavy Regex parsing to a background thread!
+                var (parsedBlocks, errors) = await Task.Run(() =>
                 {
-                    string txt = $"{block.BlockType}: {block.Name}";
-                    _cmbBlocks.Items.Add(txt);
-                    int txtW = (int)g.MeasureString(txt, _cmbBlocks.Font).Width;
-                    if (txtW > maxCmbWidth) maxCmbWidth = txtW;
-                }
-            }
-            _cmbBlocks.DropDownWidth = maxCmbWidth + 20;
+                    var blocks = _parser.Parse(sclText, out List<string> errs);
+                    return (blocks, errs);
+                });
 
-            _cmbBlocks.SelectedIndex = 0;
+                _parsedBlocks = parsedBlocks;
+                foreach (var err in errors) _lstErrors.Items.Add(err);
+
+                if (_parsedBlocks.Count == 0) return;
+
+                _lstErrors.Items.Add($"Successfully parsed {_parsedBlocks.Count} block(s).");
+
+                // Adjust ComboBox width to fit longest block name
+                int maxCmbWidth = _cmbBlocks.Width;
+                using (Graphics g = _cmbBlocks.CreateGraphics())
+                {
+                    foreach (var block in _parsedBlocks)
+                    {
+                        string txt = $"{block.BlockType}: {block.Name}";
+                        _cmbBlocks.Items.Add(txt);
+                        int txtW = (int)g.MeasureString(txt, _cmbBlocks.Font).Width;
+                        if (txtW > maxCmbWidth) maxCmbWidth = txtW;
+                    }
+                }
+                _cmbBlocks.DropDownWidth = maxCmbWidth + 20;
+
+                _cmbBlocks.SelectedIndex = 0;
+            }
+            finally
+            {
+                Cursor = Cursors.Default;
+            }
         }
 
         private void CmbBlocks_SelectedIndexChanged(object sender, EventArgs e)
@@ -458,9 +475,13 @@ namespace SCL_Interface_Tool
             if (_cmbBlocks.SelectedIndex < 0) return;
             var selectedBlock = _parsedBlocks[_cmbBlocks.SelectedIndex];
 
-            ImagePreviewForm previewForm = new ImagePreviewForm(selectedBlock, _imageGenerator);
-            previewForm.ShowDialog(this);
+            // Added using statement
+            using (ImagePreviewForm previewForm = new ImagePreviewForm(selectedBlock, _imageGenerator))
+            {
+                previewForm.ShowDialog(this);
+            }
         }
+
     }
 
     public class ImagePreviewForm : Form

@@ -37,11 +37,16 @@ namespace SCL_Interface_Tool.Models
                 {
                     string json = File.ReadAllText(path);
                     var settings = JsonSerializer.Deserialize<AppSettings>(json);
-                    if (settings.Prompts == null || settings.Prompts.Count == 0)
-                        settings.RestoreDefaultPrompts();
-                    return settings;
+                    if (settings?.Prompts == null || settings.Prompts.Count == 0)
+                        settings?.RestoreDefaultPrompts();
+                    return settings ?? new AppSettings();
                 }
-                catch { }
+                catch (JsonException)
+                {
+                    // The file is corrupted. Rename it so the user doesn't lose it entirely, 
+                    // but the app can generate a fresh one.
+                    File.Move(path, path + ".corrupted", overwrite: true);
+                }
             }
 
             var defaultSettings = new AppSettings();
