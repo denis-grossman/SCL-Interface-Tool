@@ -5,6 +5,7 @@ namespace SCL_Interface_Tool.Interfaces
 {
     public interface IImageGenerator
     {
-        Bitmap GenerateImage(SclBlock block);
+        // Added the showComments boolean toggle
+        Bitmap GenerateImage(SclBlock block, bool showComments);
     }
 }

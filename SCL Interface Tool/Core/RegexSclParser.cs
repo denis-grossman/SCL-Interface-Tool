@@ -8,14 +8,14 @@ namespace SCL_Interface_Tool.Parsers
 {
     public class RegexSclParser : ISclParser
     {
-        // Matches: Name {Attributes} : DataType := InitialValue; // Comment
-        // Tolerates missing attributes, values, and comments.
+        // Improved Regex: Accurately isolates DataType and Initial Value regardless of spaces/arrays
         private readonly Regex _varRegex = new Regex(
-            @"^\s*(?<name>[a-zA-Z0-9_]+)\s*(?:\{(?<attr>[^}]+)\})?\s*:\s*(?<type>[a-zA-Z0-9_\[\]\.]+)\s*(?::=\s*(?<val>[^;]+))?\s*;?\s*(?://(?<comment>.*))?$",
+            @"^\s*(?<name>[a-zA-Z0-9_]+)\s*(?:\{(?<attr>[^}]+)\})?\s*:\s*(?<type>[^:=;]+?)(?:\s*:=\s*(?<val>[^;]+))?\s*;?\s*(?://\s*(?<comment>.*))?$",
             RegexOptions.Compiled);
 
+        // Added DATA_BLOCK and TYPE support
         private readonly Regex _blockStartRegex = new Regex(
-            @"^\s*(FUNCTION_BLOCK|FUNCTION)\s+""?([^""\s]+)""?",
+            @"^\s*(FUNCTION_BLOCK|FUNCTION|DATA_BLOCK|TYPE)\s+""?([^""\s]+)""?",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         public List<SclBlock> Parse(string sclText, out List<string> errors)
@@ -25,6 +25,7 @@ namespace SCL_Interface_Tool.Parsers
 
             SclBlock currentBlock = null;
             ElementDirection currentDirection = ElementDirection.None;
+            int elementIndex = 1;
 
             var lines = sclText.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
 
@@ -43,36 +44,53 @@ namespace SCL_Interface_Tool.Parsers
                         };
                         blocks.Add(currentBlock);
                         currentDirection = ElementDirection.None;
+                        elementIndex = 1; // Reset index for new block
                         continue;
                     }
 
-                    if (currentBlock == null) continue; // Skip lines outside blocks
+                    if (currentBlock == null) continue;
 
-                    // 2. Track Variable Sections
                     var upperLine = line.Trim().ToUpper();
+
+                    // Skip struct/begin declarations inside DBs to avoid confusion
+                    if (upperLine == "STRUCT" || upperLine == "END_STRUCT" || upperLine == "BEGIN") continue;
+
+                    // 2. Track Variable Sections (for FB/FC)
                     if (upperLine.StartsWith("VAR_INPUT")) { currentDirection = ElementDirection.Input; continue; }
                     if (upperLine.StartsWith("VAR_OUTPUT")) { currentDirection = ElementDirection.Output; continue; }
                     if (upperLine.StartsWith("VAR_IN_OUT")) { currentDirection = ElementDirection.InOut; continue; }
                     if (upperLine.StartsWith("VAR_TEMP")) { currentDirection = ElementDirection.Temp; continue; }
                     if (upperLine.StartsWith("VAR CONSTANT")) { currentDirection = ElementDirection.Constant; continue; }
                     if (upperLine == "VAR") { currentDirection = ElementDirection.Static; continue; }
-                    if (upperLine == "END_VAR" || upperLine.StartsWith("END_FUNCTION")) { currentDirection = ElementDirection.None; continue; }
+                    if (upperLine == "END_VAR" || upperLine.StartsWith("END_FUNCTION") || upperLine.StartsWith("END_DATA_BLOCK") || upperLine.StartsWith("END_TYPE"))
+                    {
+                        currentDirection = ElementDirection.None;
+                        continue;
+                    }
                     if (upperLine.StartsWith("TITLE =")) { currentBlock.Title = line.Substring(line.IndexOf('=') + 1).Trim(); continue; }
 
-                    // 3. Parse Variable inside a section
-                    if (currentDirection != ElementDirection.None)
+                    // 3. Evaluate Direction for DBs and UDTs (which often lack VAR sections)
+                    ElementDirection activeDirection = currentDirection;
+                    if (activeDirection == ElementDirection.None && (currentBlock.BlockType == "DATA_BLOCK" || currentBlock.BlockType == "TYPE"))
+                    {
+                        activeDirection = ElementDirection.Member;
+                    }
+
+                    // 4. Parse Variable
+                    if (activeDirection != ElementDirection.None)
                     {
                         var varMatch = _varRegex.Match(line);
                         if (varMatch.Success)
                         {
                             currentBlock.Elements.Add(new InterfaceElement
                             {
-                                Name = varMatch.Groups["name"].Value,
+                                Index = elementIndex++,
+                                Name = varMatch.Groups["name"].Value.Trim(),
                                 Attributes = varMatch.Groups["attr"].Value.Trim(),
                                 DataType = varMatch.Groups["type"].Value.Trim(),
                                 InitialValue = varMatch.Groups["val"].Value.Trim(),
                                 Comment = varMatch.Groups["comment"].Value.Trim(),
-                                Direction = currentDirection
+                                Direction = activeDirection
                             });
                         }
                     }
