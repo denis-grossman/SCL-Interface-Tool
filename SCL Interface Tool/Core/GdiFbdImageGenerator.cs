@@ -14,46 +14,76 @@ namespace SCL_Interface_Tool.ImageGeneration
             var inputs = block.Elements.Where(e => e.Direction == ElementDirection.Input).ToList();
             var outputs = block.Elements.Where(e => e.Direction == ElementDirection.Output).ToList();
 
+            // Fonts initialized early so we can measure text width
+            Font fbNumFont = new Font("Segoe UI", 9.5f, FontStyle.Bold);
+            Font fbNameFont = new Font("Segoe UI", 9f, FontStyle.Regular);
+            Font pinFont = new Font("Segoe UI", 9f, FontStyle.Regular);
+            Font valFont = new Font("Segoe UI", 8f, FontStyle.Regular);
+            Font commentFont = new Font("Segoe UI", 8.5f, FontStyle.Italic);
+
             // Layout Constants
             int headerHeight = 45;
-            int blockWidth = 140;
             int lineLength = 25;
             int minRowHeight = 24;
-
-            // Comment constraints
             int maxCommentWidth = 250;
-            Font commentFont = new Font("Segoe UI", 8.5f, FontStyle.Italic);
-            int maxCommentHeight = commentFont.Height * 3 + 2; // Exact height to fit max 3 lines
+            int maxCommentHeight = commentFont.Height * 3 + 2;
 
             int maxRows = Math.Max(inputs.Count + 1, outputs.Count + 1);
             int[] rowHeights = new int[maxRows];
 
+            int blockWidth = 140; // Absolute Minimum width
+
             // -------------------------------------------------------------
-            // PASS 1: Calculate Dynamic Row Heights based on Comment Length
+            // PASS 1: Calculate Dynamic Heights AND Dynamic Block Width
             // -------------------------------------------------------------
             using (Graphics gMeasure = Graphics.FromImage(new Bitmap(1, 1)))
             {
+                gMeasure.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+                float maxLeftWidth = gMeasure.MeasureString("EN", pinFont).Width;
+                float maxRightWidth = gMeasure.MeasureString("ENO", pinFont).Width;
+
+                // Measure Header text to ensure titles don't overflow
+                float titleWidth1 = gMeasure.MeasureString($"\"{block.Name}\"", fbNameFont).Width + 20;
+                float titleWidth2 = block.BlockType == "FUNCTION_BLOCK" ? gMeasure.MeasureString($"\"iDB_{block.Name}\"", fbNameFont).Width + 20 : 0;
+                float maxTitleWidth = Math.Max(titleWidth1, titleWidth2);
+
                 for (int r = 0; r < maxRows; r++)
                 {
                     int requiredHeight = minRowHeight;
-                    if (showComments)
-                    {
-                        string leftCmt = (r > 0 && r - 1 < inputs.Count && !string.IsNullOrWhiteSpace(inputs[r - 1].Comment)) ? "// " + inputs[r - 1].Comment : "";
-                        string rightCmt = (r < outputs.Count && !string.IsNullOrWhiteSpace(outputs[r].Comment)) ? "// " + outputs[r].Comment : "";
 
-                        if (!string.IsNullOrEmpty(leftCmt))
+                    // Measure Input Pins (Left)
+                    if (r > 0 && r - 1 < inputs.Count)
+                    {
+                        var input = inputs[r - 1];
+                        maxLeftWidth = Math.Max(maxLeftWidth, gMeasure.MeasureString(input.Name, pinFont).Width);
+
+                        if (showComments && !string.IsNullOrWhiteSpace(input.Comment))
                         {
-                            SizeF s = gMeasure.MeasureString(leftCmt, commentFont, maxCommentWidth);
-                            requiredHeight = Math.Max(requiredHeight, (int)Math.Min(s.Height + 8, maxCommentHeight + 8));
-                        }
-                        if (!string.IsNullOrEmpty(rightCmt))
-                        {
-                            SizeF s = gMeasure.MeasureString(rightCmt, commentFont, maxCommentWidth);
+                            SizeF s = gMeasure.MeasureString("// " + input.Comment, commentFont, maxCommentWidth);
                             requiredHeight = Math.Max(requiredHeight, (int)Math.Min(s.Height + 8, maxCommentHeight + 8));
                         }
                     }
+
+                    // Measure Output Pins (Right)
+                    if (r < outputs.Count)
+                    {
+                        var output = outputs[r];
+                        maxRightWidth = Math.Max(maxRightWidth, gMeasure.MeasureString(output.Name, pinFont).Width);
+
+                        if (showComments && !string.IsNullOrWhiteSpace(output.Comment))
+                        {
+                            SizeF s = gMeasure.MeasureString("// " + output.Comment, commentFont, maxCommentWidth);
+                            requiredHeight = Math.Max(requiredHeight, (int)Math.Min(s.Height + 8, maxCommentHeight + 8));
+                        }
+                    }
+
                     rowHeights[r] = requiredHeight;
                 }
+
+                // Safely calculate the new block width (Left Text + Right Text + 40px safe gap in the middle)
+                int requiredPinWidth = (int)Math.Ceiling(maxLeftWidth + 40 + maxRightWidth);
+                blockWidth = Math.Max(140, Math.Max(requiredPinWidth, (int)Math.Ceiling(maxTitleWidth)));
             }
 
             int blockHeight = headerHeight + rowHeights.Sum() + 10;
@@ -91,16 +121,9 @@ namespace SCL_Interface_Tool.ImageGeneration
                 // 3. Draw Block Outline
                 g.DrawRectangle(Pens.DarkGray, new Rectangle(startX, startY, blockWidth, blockHeight));
 
-                Font fbNumFont = new Font("Segoe UI", 9.5f, FontStyle.Bold);
-                Font fbNameFont = new Font("Segoe UI", 9f, FontStyle.Regular);
-                Font pinFont = new Font("Segoe UI", 9f, FontStyle.Regular);
-                Font valFont = new Font("Segoe UI", 8f, FontStyle.Regular);
                 Brush commentBrush = new SolidBrush(Color.FromArgb(34, 139, 34)); // TIA Green
-
                 StringFormat centerFormat = new StringFormat { Alignment = StringAlignment.Center };
                 StringFormat rightFormat = new StringFormat { Alignment = StringAlignment.Far };
-
-                // Formats for truncating multi-line comments with "..."
                 StringFormat leftCommentFormat = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter };
                 StringFormat rightCommentFormat = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter };
 
@@ -126,7 +149,7 @@ namespace SCL_Interface_Tool.ImageGeneration
 
                 // Calculate Y Centers for each row
                 int[] rowYCenters = new int[maxRows];
-                int currentY = startY + headerHeight + 5; // Top padding inside block
+                int currentY = startY + headerHeight + 5;
                 for (int r = 0; r < maxRows; r++)
                 {
                     rowYCenters[r] = currentY + (rowHeights[r] / 2);
@@ -162,8 +185,6 @@ namespace SCL_Interface_Tool.ImageGeneration
                         {
                             RectangleF cmtRect = new RectangleF(startX - lineLength - 20 - maxCommentWidth, yPos - (maxCommentHeight / 2), maxCommentWidth, maxCommentHeight);
                             g.DrawString($"// {el.Comment}", commentFont, commentBrush, cmtRect, leftCommentFormat);
-
-                            // Widen bounding box so hovering over the comment also shows the yellow hint
                             el.DisplayBounds = new Rectangle((int)cmtRect.X, yPos - (rowHeights[i + 1] / 2), maxCommentWidth + lineLength + 60, rowHeights[i + 1]);
                         }
                         else
@@ -192,7 +213,6 @@ namespace SCL_Interface_Tool.ImageGeneration
                         {
                             RectangleF cmtRect = new RectangleF(startX + blockWidth + lineLength + 20, yPos - (maxCommentHeight / 2), maxCommentWidth, maxCommentHeight);
                             g.DrawString($"// {el.Comment}", commentFont, commentBrush, cmtRect, rightCommentFormat);
-
                             el.DisplayBounds = new Rectangle(startX + blockWidth - 40, yPos - (rowHeights[i] / 2), maxCommentWidth + lineLength + 60, rowHeights[i]);
                         }
                         else
@@ -209,8 +229,15 @@ namespace SCL_Interface_Tool.ImageGeneration
                 }
 
                 commentBrush.Dispose();
-                commentFont.Dispose();
             }
+
+            // Cleanup Fonts
+            fbNumFont.Dispose();
+            fbNameFont.Dispose();
+            pinFont.Dispose();
+            valFont.Dispose();
+            commentFont.Dispose();
+
             return bmp;
         }
     }
