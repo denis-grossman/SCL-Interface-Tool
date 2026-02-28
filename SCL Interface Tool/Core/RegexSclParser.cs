@@ -23,6 +23,19 @@ namespace SCL_Interface_Tool.Parsers
             var blocks = new List<SclBlock>();
             errors = new List<string>();
 
+            // Convert inline (* comment *) to // comment so the variable regex can extract them
+            // This handles: VarName : Int; (* This is a comment *)
+            sclText = Regex.Replace(sclText, @"\(\*\s*(.*?)\s*\*\)", m =>
+            {
+                string content = m.Groups[1].Value.Trim();
+                // If the comment is on a line with other code, convert to // comment
+                // If it spans multiple lines (contains newline), just remove it
+                if (content.Contains("\n") || content.Contains("\r"))
+                    return ""; // Remove multi-line block comments
+                else
+                    return "// " + content; // Convert single-line block comments to //
+            });
+
             SclBlock currentBlock = null;
             ElementDirection currentDirection = ElementDirection.None;
             int elementIndex = 1;
@@ -31,6 +44,8 @@ namespace SCL_Interface_Tool.Parsers
 
             foreach (var line in lines)
             {
+                // ... rest of the method stays exactly the same
+
                 try
                 {
                     // 1. Check for block start

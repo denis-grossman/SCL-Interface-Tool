@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <PackageReference Include="FastColoredTextBox.NET10" Version="2.16.26.9180" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="5.0.0" />
   </ItemGroup>
 
   <ItemGroup>

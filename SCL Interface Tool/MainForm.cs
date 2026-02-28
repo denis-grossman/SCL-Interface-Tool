@@ -21,6 +21,8 @@ namespace SCL_Interface_Tool
         private ComboBox _cmbBlocks;
         private ListBox _lstErrors;
         private Button _btnGenerateImage;
+        private Button _btnSimulate;
+
 
         // Upgraded Layout Containers
         private SplitContainer _mainSplit;
@@ -152,17 +154,23 @@ namespace SCL_Interface_Tool
             _cmbBlocks.SelectedIndexChanged += CmbBlocks_SelectedIndexChanged;
             _btnGenerateImage = new Button { Text = "🖼️ Generate FBD Image", Left = 300, Top = 8, Width = 155, Enabled = false };
             _btnGenerateImage.Click += BtnGenerateImage_Click;
+            _btnSimulate = new Button { Text = "▶️ Simulate Block", Left = 465, Top = 8, Width = 120, Enabled = false };
+            _btnSimulate.Click += BtnSimulate_Click;
 
-            pnlControls.Controls.AddRange(new Control[] { lblBlock, _cmbBlocks, _btnGenerateImage });
+            pnlControls.Controls.AddRange(new Control[] { lblBlock, _cmbBlocks, _btnGenerateImage, _btnSimulate });
+
+
 
             _dgvElements = new DataGridView
             {
                 Dock = DockStyle.Fill,
-                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells,
+                // CHANGED: Set to None so user can manually adjust widths!
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None,
                 AllowUserToAddRows = false,
                 ReadOnly = true,
                 SelectionMode = DataGridViewSelectionMode.FullRowSelect
             };
+
 
             _dgvElements.CellToolTipTextNeeded += (s, e) =>
             {
@@ -457,18 +465,60 @@ namespace SCL_Interface_Tool
 
                 if (_dgvElements.Columns.Contains("DisplayBounds")) _dgvElements.Columns["DisplayBounds"].Visible = false;
 
-                // Restore hidden columns from settings
                 foreach (var colName in _settings.HiddenColumns)
                 {
                     if (_dgvElements.Columns.Contains(colName))
                         _dgvElements.Columns[colName].Visible = false;
                 }
+
+                // Auto-fit once, then user can drag
+                _dgvElements.AutoResizeColumns(DataGridViewAutoSizeColumnsMode.DisplayedCells);
+                if (_dgvElements.Columns.Contains("Comment"))
+                    _dgvElements.Columns["Comment"].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
             }
 
-            bool isLogicBlock = selectedBlock.BlockType == "FUNCTION_BLOCK" || selectedBlock.BlockType == "FUNCTION";
+            // Only logic blocks can generate FBD images and be simulated
+            string bt = selectedBlock.BlockType.ToUpper();
+            bool isLogicBlock = bt == "FUNCTION_BLOCK" || bt == "FUNCTION" ||
+                                bt == "PROGRAM" || bt == "ORGANIZATION_BLOCK";
+            bool isDataBlock = bt == "DATA_BLOCK" || bt == "TYPE";
+
             _btnGenerateImage.Enabled = isLogicBlock;
-            _btnGenerateImage.Text = isLogicBlock ? "🖼️ Generate FBD Image" : "Image N/A for Data Blocks";
+            _btnSimulate.Enabled = isLogicBlock;
+
+            if (isLogicBlock)
+            {
+                _btnGenerateImage.Text = "🖼️ Generate FBD Image";
+            }
+            else if (isDataBlock)
+            {
+                _btnGenerateImage.Text = "📋 Data View (No FBD)";
+            }
+            else
+            {
+                _btnGenerateImage.Text = "🖼️ Image N/A";
+            }
         }
+
+
+        private void BtnSimulate_Click(object sender, EventArgs e)
+        {
+            if (_cmbBlocks.SelectedIndex < 0) return;
+            var selectedBlock = _parsedBlocks[_cmbBlocks.SelectedIndex];
+
+            try
+            {
+                // CRITICAL FIX: Changed ShowDialog to Show! You can now edit code without closing the Simulator!
+                SimulationForm simForm = new SimulationForm(selectedBlock, () => _rtbInput.Text, (GdiFbdImageGenerator)_imageGenerator);
+                simForm.Show();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Simulation Initialization Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+
 
         private void BtnGenerateImage_Click(object sender, EventArgs e)
         {
@@ -481,6 +531,7 @@ namespace SCL_Interface_Tool
                 previewForm.ShowDialog(this);
             }
         }
+
 
     }
 
@@ -640,5 +691,6 @@ namespace SCL_Interface_Tool
                 }
             };
         }
+
     }
 }
