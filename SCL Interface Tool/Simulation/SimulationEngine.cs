@@ -23,7 +23,20 @@ namespace SCL_Interface_Tool.Simulation
         public int CycleTimeMs { get; private set; }
         public long CycleTimeTicks { get; private set; } // High-resolution ticks
         public event Action<Exception> OnError;
+        public void StepScans(int count)
+        {
+            if (_runner == null) return;
 
+            lock (MemoryLock)
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    _context.PrepareForNextScanCycle();
+                    _runner(_globals).Wait();
+                    CycleTimeTicks++; // Just incrementing a dummy counter for stat tracking during tests
+                }
+            }
+        }
         public void Compile(string code, ExecutionContext context)
         {
             _context = context;

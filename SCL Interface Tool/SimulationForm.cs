@@ -8,7 +8,10 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
 using System.Linq;
+using System.Net.Http;
+using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using ExecutionContext = SCL_Interface_Tool.Simulation.ExecutionContext;
 
@@ -16,6 +19,7 @@ namespace SCL_Interface_Tool
 {
     public partial class SimulationForm : Form
     {
+        private AppSettings _appSettings;
         private SclBlock _block;
         private Func<string> _getCode;
         private Bitmap _baseImage;
@@ -65,6 +69,7 @@ namespace SCL_Interface_Tool
 
         public SimulationForm(SclBlock block, Func<string> getCode, GdiFbdImageGenerator imageGen)
         {
+            _appSettings = AppSettings.Load(); // Load Ollama Settings
             _block = block;
             _getCode = getCode;
             _baseImage = imageGen.GenerateImage(block, false);
@@ -80,31 +85,200 @@ namespace SCL_Interface_Tool
 
             int imgW = _baseImage.Width + 30;
             int imgH = _baseImage.Height + 20;
-            this.Size = new Size(Math.Max(1200, imgW + 500), Math.Max(700, imgH + 200));
+            this.Size = new Size(Math.Max(1300, imgW + 500), Math.Max(700, imgH + 200)); // Slightly wider for AI buttons
 
+            // =========================================================
+            // 1. GLOBAL TOOLSTRIP
+            // =========================================================
             ToolStrip ts = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden, Padding = new Padding(5) };
             var btnStart = new ToolStripButton("▶ Start", null, (s, e) => _engine?.Start()) { ForeColor = Color.Green, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
             var btnPause = new ToolStripButton("⏸ Pause", null, (s, e) => _engine?.Pause()) { ForeColor = Color.DarkOrange, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
             var btnStop = new ToolStripButton("⏹ Stop", null, (s, e) => _engine?.Stop()) { ForeColor = Color.Red, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
             var btnRestart = new ToolStripButton("🔄 Reset Memory", null, (s, e) => RestartSimulation());
-            var btnReload = new ToolStripButton("🔁 Apply Code Changes", null, (s, e) => ReloadCode()) { ForeColor = Color.DarkMagenta, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
+            var btnReload = new ToolStripButton("🔂 Apply Code Changes", null, (s, e) => ReloadCode()) { ForeColor = Color.DarkMagenta, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
             _lblStatus = new ToolStripLabel("Status: IDLE") { Font = new Font("Consolas", 10, FontStyle.Bold) };
 
             ts.Items.AddRange(new ToolStripItem[] { btnStart, btnPause, btnStop, new ToolStripSeparator(), btnRestart, btnReload, new ToolStripSeparator(), _lblStatus });
             this.Controls.Add(ts);
 
+            // =========================================================
+            // 2. MAIN LAYOUT CONTAINER
+            // =========================================================
             TableLayoutPanel mainLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, CellBorderStyle = TableLayoutPanelCellBorderStyle.Single };
             mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
             mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, imgW));
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
 
+            // =========================================================
+            // 3. LEFT PANEL: TAB CONTROL (Watch Table & Auto-Test)
+            // =========================================================
+            TabControl tabLeft = new TabControl { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
+
+            // --- TAB 1: Live Watch Table ---
+            TabPage tabWatch = new TabPage("🔍 Live Watch Table");
             _dgvWatch = new SimDataGridView { Dock = DockStyle.Fill, AllowUserToAddRows = false, RowHeadersVisible = false, SelectionMode = DataGridViewSelectionMode.CellSelect, EditMode = DataGridViewEditMode.EditOnKeystrokeOrF2, BackgroundColor = Color.White, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None };
             _boldFont = new Font(_dgvWatch.Font, FontStyle.Bold);
             _dgvWatch.CellValueChanged += DgvWatch_CellValueChanged;
             _dgvWatch.CellFormatting += DgvWatch_CellFormatting;
             _dgvWatch.CellDoubleClick += DgvWatch_CellDoubleClick;
-            mainLayout.Controls.Add(_dgvWatch, 0, 0);
+            tabWatch.Controls.Add(_dgvWatch);
 
+            // --- TAB 2: Automated Testing Suite ---
+            TabPage tabTest = new TabPage("⚙️ Automated Testing");
+            SplitContainer splitTest = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 250 };
+
+            // DSL Editor setup
+            FastColoredTextBoxNS.FastColoredTextBox rtbScript = new FastColoredTextBoxNS.FastColoredTextBox
+            {
+                Dock = DockStyle.Fill,
+                Language = FastColoredTextBoxNS.Language.Custom,
+                Font = new Font("Consolas", 10),
+                ShowLineNumbers = true,
+                BackColor = Color.FromArgb(245, 245, 245)
+            };
+
+            var dslKeywordStyle = new FastColoredTextBoxNS.TextStyle(Brushes.Blue, null, FontStyle.Bold);
+            var dslCommentStyle = new FastColoredTextBoxNS.TextStyle(Brushes.Green, null, FontStyle.Italic);
+
+            rtbScript.TextChangedDelayed += (s, ev) => {
+                ev.ChangedRange.ClearStyle(dslKeywordStyle, dslCommentStyle);
+                ev.ChangedRange.SetStyle(dslKeywordStyle, @"\b(SET|RUN|ASSERT|SCANS|MS)\b", RegexOptions.IgnoreCase);
+                ev.ChangedRange.SetStyle(dslCommentStyle, @"//.*");
+            };
+            rtbScript.Text = "// Click '🤖 Generate via AI' to automatically write a script\n";
+
+            // Auto-Test Top Toolbar (With Save/Load & AI Buttons)
+            Panel pnlTestTop = new Panel { Dock = DockStyle.Top, Height = 35 };
+            Button btnRunTest = new Button { Text = "▶ Run Script", Left = 5, Top = 5, Width = 95, BackColor = Color.LightGreen, Font = new Font("Segoe UI", 8, FontStyle.Bold) };
+            Button btnLoadTest = new Button { Text = "📂 Load", Left = 105, Top = 5, Width = 60, Font = new Font("Segoe UI", 8, FontStyle.Regular) };
+            Button btnSaveTest = new Button { Text = "💾 Save", Left = 170, Top = 5, Width = 60, Font = new Font("Segoe UI", 8, FontStyle.Regular) };
+            Button btnHelp = new Button { Text = "💡 Help", Left = 235, Top = 5, Width = 60, Font = new Font("Segoe UI", 8, FontStyle.Regular) };
+            Button btnGenAI = new Button { Text = "🤖 Generate via AI", Left = 300, Top = 5, Width = 135, Font = new Font("Segoe UI", 8, FontStyle.Bold), ForeColor = Color.DarkViolet };
+            Button btnAnalyzeAI = new Button { Text = "🧠 Analyze Logs", Left = 440, Top = 5, Width = 115, Font = new Font("Segoe UI", 8, FontStyle.Bold), ForeColor = Color.DarkBlue };
+
+            pnlTestTop.Controls.AddRange(new Control[] { btnRunTest, btnLoadTest, btnSaveTest, btnHelp, btnGenAI, btnAnalyzeAI });
+
+            RichTextBox rtbLog = new RichTextBox { Dock = DockStyle.Fill, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.LightGray, Font = new Font("Consolas", 9), ReadOnly = true };
+
+            // --- FILE I/O ---
+            btnLoadTest.Click += (s, e) =>
+            {
+                using (OpenFileDialog ofd = new OpenFileDialog { Filter = "SCL Test Files (*.scltest)|*.scltest|Text Files (*.txt)|*.txt", Title = "Load Unit Test" })
+                {
+                    if (ofd.ShowDialog() == DialogResult.OK) rtbScript.Text = System.IO.File.ReadAllText(ofd.FileName);
+                }
+            };
+
+            btnSaveTest.Click += (s, e) =>
+            {
+                using (SaveFileDialog sfd = new SaveFileDialog { Filter = "SCL Test Files (*.scltest)|*.scltest|Text Files (*.txt)|*.txt", DefaultExt = "scltest", FileName = $"{_block.Name}_Test.scltest" })
+                {
+                    if (sfd.ShowDialog() == DialogResult.OK)
+                    {
+                        System.IO.File.WriteAllText(sfd.FileName, rtbScript.Text);
+                        MessageBox.Show("Test script saved successfully!", "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                }
+            };
+
+            btnHelp.Click += (s, e) => MessageBox.Show("DSL Syntax Guide:\n\n1. SET Variable = Value\n2. RUN [X] SCANS\n3. RUN [X] MS (Advances Timers instantly)\n4. ASSERT Variable == Value\n\nNotes:\n- Arrays: MyArray[0]\n- Structs: MyStruct.Field\n- Syntax is Case-Insensitive.\n- Prefix comments with //", "Auto-Test Help", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+            // --- OLLAMA AI GENERATION ---
+            btnGenAI.Click += async (s, e) =>
+            {
+                btnGenAI.Enabled = false;
+                btnGenAI.Text = "⏳ Thinking...";
+                Cursor = Cursors.WaitCursor;
+
+                string promptTemplate = _appSettings.Prompts.FirstOrDefault(p => p.Name == "Generate Unit Test Script")?.Text ?? "Generate a test.";
+                string fullPrompt = $"{promptTemplate}\n\nCode:\n{_getCode()}";
+
+                string response = await AskOllamaAsync(fullPrompt);
+
+                // Clean up any markdown code blocks the LLM might have returned
+                var match = Regex.Match(response, @"```[^\n]*\n(.*?)\n```", RegexOptions.Singleline);
+                rtbScript.Text = match.Success ? match.Groups[1].Value : response.Trim();
+
+                btnGenAI.Text = "🤖 Generate via AI";
+                btnGenAI.Enabled = true;
+                Cursor = Cursors.Default;
+            };
+
+            // --- OLLAMA AI ANALYSIS ---
+            btnAnalyzeAI.Click += async (s, e) =>
+            {
+                if (string.IsNullOrWhiteSpace(rtbLog.Text)) { MessageBox.Show("Please run a test first to generate logs.", "No Logs", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+
+                btnAnalyzeAI.Enabled = false;
+                btnAnalyzeAI.Text = "⏳ Analyzing...";
+                Cursor = Cursors.WaitCursor;
+
+                string analysisPrompt = $"You are a Senior Siemens PLC Engineer. Analyze the following failed Unit Test execution.\n\n" +
+                                        $"--- SCL CODE ---\n{_getCode()}\n\n" +
+                                        $"--- TEST SCRIPT ---\n{rtbScript.Text}\n\n" +
+                                        $"--- EXECUTION LOG ---\n{rtbLog.Text}\n\n" +
+                                        $"Provide a short, concise analysis of why the assertions failed. Is it a real bug in the SCL code, or did the test script misunderstand the PLC Scan Cycle / Timers / Logic? How would you fix it?";
+
+                string response = await AskOllamaAsync(analysisPrompt);
+
+                rtbLog.AppendText("\n\n=== 🧠 AI ANALYSIS ===\n");
+                int start = rtbLog.TextLength;
+                rtbLog.AppendText(response + "\n");
+                rtbLog.Select(start, response.Length);
+                rtbLog.SelectionColor = Color.Cyan;
+                rtbLog.ScrollToCaret();
+
+                btnAnalyzeAI.Text = "🧠 Analyze Logs";
+                btnAnalyzeAI.Enabled = true;
+                Cursor = Cursors.Default;
+            };
+
+            // --- RUN SCRIPT ---
+            btnRunTest.Click += async (s, e) =>
+            {
+                if (_engine == null || _context == null) return;
+                bool wasRunning = _engine.IsRunning && !_engine.IsPaused;
+                _engine.Pause();
+                rtbLog.Clear();
+
+                Action<string, Color, bool> appendLog = null;
+                appendLog = (text, color, bold) => {
+                    if (rtbLog.InvokeRequired)
+                    {
+                        rtbLog.Invoke(new Action(() => appendLog(text, color, bold)));
+                        return;
+                    }
+                    int start = rtbLog.TextLength;
+                    rtbLog.AppendText(text + "\n");
+                    rtbLog.Select(start, text.Length);
+                    rtbLog.SelectionColor = color;
+                    if (bold) rtbLog.SelectionFont = new Font(rtbLog.Font, FontStyle.Bold);
+                    rtbLog.ScrollToCaret();
+                };
+
+                var runner = new AutoTestRunner(_context, _engine, appendLog);
+                btnRunTest.Enabled = false;
+
+                await runner.RunScriptAsync(rtbScript.Text);
+
+                btnRunTest.Enabled = true;
+                if (wasRunning) _engine.Start();
+
+                UpdateUI();
+            };
+
+            splitTest.Panel1.Controls.Add(rtbScript);
+            splitTest.Panel1.Controls.Add(pnlTestTop);
+            splitTest.Panel2.Controls.Add(rtbLog);
+            tabTest.Controls.Add(splitTest);
+
+            tabLeft.TabPages.Add(tabWatch);
+            tabLeft.TabPages.Add(tabTest);
+            mainLayout.Controls.Add(tabLeft, 0, 0);
+
+            // =========================================================
+            // 4. RIGHT PANEL: FBD GRAPHICS & STATS
+            // =========================================================
             TableLayoutPanel rightPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
             rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, imgH));
             rightPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
@@ -120,6 +294,10 @@ namespace SCL_Interface_Tool
             rightPanel.Controls.Add(pnlStats, 0, 1);
 
             mainLayout.Controls.Add(rightPanel, 1, 0);
+
+            // =========================================================
+            // 5. ASSEMBLE FORM & START TIMERS
+            // =========================================================
             this.Controls.Add(mainLayout);
             mainLayout.BringToFront();
 
@@ -128,6 +306,58 @@ namespace SCL_Interface_Tool
             this.FormClosing += (s, e) => { _engine?.Stop(); _uiTimer?.Stop(); _boldFont?.Dispose(); };
         }
 
+        // =========================================================
+        // LOCAL OLLAMA API REQUEST HANDLER
+        // =========================================================
+        private async Task<string> AskOllamaAsync(string promptText)
+        {
+            try
+            {
+                using (HttpClient client = new HttpClient { Timeout = TimeSpan.FromMinutes(5) })
+                {
+                    var requestBody = new { model = _appSettings.OllamaModelName, prompt = promptText, stream = false };
+                    string jsonPayload = JsonSerializer.Serialize(requestBody);
+                    var content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
+
+                    string url = $"{_appSettings.OllamaApiUrl.TrimEnd('/')}/api/generate";
+                    HttpResponseMessage response = await client.PostAsync(url, content);
+
+                    string responseJson = await response.Content.ReadAsStringAsync();
+
+                    // If Ollama returned a 500 or 400 error, extract the exact reason from its JSON body
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        try
+                        {
+                            using (JsonDocument errDoc = JsonDocument.Parse(responseJson))
+                            {
+                                string apiError = errDoc.RootElement.GetProperty("error").GetString();
+                                return $"Ollama API Error ({response.StatusCode}): {apiError}";
+                            }
+                        }
+                        catch
+                        {
+                            return $"HTTP Error {response.StatusCode}: {responseJson}";
+                        }
+                    }
+
+                    // Success parsing
+                    using (JsonDocument doc = JsonDocument.Parse(responseJson))
+                    {
+                        return doc.RootElement.GetProperty("response").GetString();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                return $"Error connecting to local AI: {ex.Message}\nEnsure Ollama is running and the selected model is installed.";
+            }
+        }
+
+
+        // =========================================================
+        // ENGINE & GRAPHICS LOGIC
+        // =========================================================
         private void InitializeSimulation()
         {
             _context = new ExecutionContext(_block, _getCode());
@@ -155,40 +385,43 @@ namespace SCL_Interface_Tool
                 {
                     int lo = 0, hi = arr.Length - 1;
                     var match = Regex.Match(dt, @"\[\s*(\d+)\s*\.\.\s*(\d+)\s*\]");
-                    if (match.Success) { lo = int.Parse(match.Groups[1].Value); hi = int.Parse(match.Groups[2].Value); }
+                    if (match.Success)
+                    {
+                        lo = int.Parse(match.Groups[1].Value); hi = int.Parse(match.Groups[2].Value); }
 
                     for (int i = lo; i <= hi; i++)
+                        {
+                            object val = arr.GetValue(i);
+                            _watchRows.Add(new WatchRow { Name = $"{m.Name}[{i}]", ParentName = m.Name, SubKey = i, DataType = dt, Direction = m.Direction.ToString(), LiveValue = FormatPrimitive(val), Comment = comment, IsBool = val is bool });
+                        }
+                    }
+                    // Flatten Structs
+                    else if (m.CurrentValue is Dictionary<string, object> dict)
                     {
-                        object val = arr.GetValue(i);
-                        _watchRows.Add(new WatchRow { Name = $"{m.Name}[{i}]", ParentName = m.Name, SubKey = i, DataType = dt, Direction = m.Direction.ToString(), LiveValue = FormatPrimitive(val), Comment = comment, IsBool = val is bool });
+                        foreach (var kvp in dict)
+                        {
+                            _watchRows.Add(new WatchRow { Name = $"{m.Name}.{kvp.Key}", ParentName = m.Name, SubKey = kvp.Key, DataType = "Struct Field", Direction = m.Direction.ToString(), LiveValue = FormatPrimitive(kvp.Value), Comment = comment, IsBool = kvp.Value is bool });
+                        }
+                    }
+                    // Standard Variables
+                    else
+                    {
+                        _watchRows.Add(new WatchRow { Name = m.Name, ParentName = m.Name, SubKey = null, DataType = dt, Direction = m.Direction.ToString(), LiveValue = FormatPrimitive(m.CurrentValue), Comment = comment, IsBool = m.CurrentValue is bool });
                     }
                 }
-                // Flatten Structs
-                else if (m.CurrentValue is Dictionary<string, object> dict)
-                {
-                    foreach (var kvp in dict)
-                    {
-                        _watchRows.Add(new WatchRow { Name = $"{m.Name}.{kvp.Key}", ParentName = m.Name, SubKey = kvp.Key, DataType = "Struct Field", Direction = m.Direction.ToString(), LiveValue = FormatPrimitive(kvp.Value), Comment = comment, IsBool = kvp.Value is bool });
-                    }
-                }
-                // Standard Variables
-                else
-                {
-                    _watchRows.Add(new WatchRow { Name = m.Name, ParentName = m.Name, SubKey = null, DataType = dt, Direction = m.Direction.ToString(), LiveValue = FormatPrimitive(m.CurrentValue), Comment = comment, IsBool = m.CurrentValue is bool });
-                }
-            }
 
-            _dgvWatch.DataSource = _watchRows;
-            _dgvWatch.AutoResizeColumns(DataGridViewAutoSizeColumnsMode.DisplayedCells);
-            if (_dgvWatch.Columns.Contains("Name")) _dgvWatch.Columns["Name"].ReadOnly = true;
-            if (_dgvWatch.Columns.Contains("DataType")) _dgvWatch.Columns["DataType"].ReadOnly = true;
-            if (_dgvWatch.Columns.Contains("Direction")) _dgvWatch.Columns["Direction"].ReadOnly = true;
-            if (_dgvWatch.Columns.Contains("ParentName")) _dgvWatch.Columns["ParentName"].Visible = false;
-            if (_dgvWatch.Columns.Contains("SubKey")) _dgvWatch.Columns["SubKey"].Visible = false;
-            if (_dgvWatch.Columns.Contains("IsBool")) _dgvWatch.Columns["IsBool"].Visible = false;
-            if (_dgvWatch.Columns.Contains("Comment")) { _dgvWatch.Columns["Comment"].ReadOnly = true; _dgvWatch.Columns["Comment"].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill; }
-            if (_dgvWatch.Columns.Contains("LiveValue")) { _dgvWatch.Columns["LiveValue"].HeaderText = "✏️ Monitor / Force"; _dgvWatch.Columns["LiveValue"].Width = 120; }
-        }
+                _dgvWatch.DataSource = _watchRows;
+                _dgvWatch.AutoResizeColumns(DataGridViewAutoSizeColumnsMode.DisplayedCells);
+                if (_dgvWatch.Columns.Contains("Name")) _dgvWatch.Columns["Name"].ReadOnly = true;
+                if (_dgvWatch.Columns.Contains("DataType")) _dgvWatch.Columns["DataType"].ReadOnly = true;
+                if (_dgvWatch.Columns.Contains("Direction")) _dgvWatch.Columns["Direction"].ReadOnly = true;
+                if (_dgvWatch.Columns.Contains("ParentName")) _dgvWatch.Columns["ParentName"].Visible = false;
+                if (_dgvWatch.Columns.Contains("SubKey")) _dgvWatch.Columns["SubKey"].Visible = false;
+                if (_dgvWatch.Columns.Contains("IsBool")) _dgvWatch.Columns["IsBool"].Visible = false;
+                if (_dgvWatch.Columns.Contains("Comment")) { _dgvWatch.Columns["Comment"].ReadOnly = true; _dgvWatch.Columns["Comment"].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill; }
+                if (_dgvWatch.Columns.Contains("LiveValue")) { _dgvWatch.Columns["LiveValue"].HeaderText = "✏️ Monitor / Force"; _dgvWatch.Columns["LiveValue"].Width = 120; }
+            }
+        
 
         private string FormatPrimitive(object val)
         {
@@ -271,10 +504,10 @@ namespace SCL_Interface_Tool
                 if (_lastCycleUs > _maxCycleUs) _maxCycleUs = _lastCycleUs;
 
                 _lblStats.ForeColor = Color.FromArgb(40, 60, 90);
-                _lblStats.Text = $"  Statistics\n  ─────────────────────────\n  Cycle Time:  {_lastCycleUs,8} µs\n  Min Cycle:   {_minCycleUs,8} µs\n  Max Cycle:   {_maxCycleUs,8} µs\n  Scan Count:  {_scanCount,8}\n  ─────────────────────────\n  Block: {_block.Name}";
+                _lblStats.Text = $"  Statistics\n  ──────────────────────────────────────────────────────────\n  Cycle Time:  {_lastCycleUs,8} µs\n  Min Cycle:   {_minCycleUs,8} µs\n  Max Cycle:   {_maxCycleUs,8} µs\n  Scan Count:  {_scanCount,8}\n  ──────────────────────────────────────────────────────────\n  Block: {_block.Name}";
             }
             else if (_engine.IsPaused) { _lblStatus.Text = "PAUSED"; _lblStatus.ForeColor = Color.DarkOrange; }
-            else { _lblStatus.Text = "STOPPED"; _lblStatus.ForeColor = Color.Red; _lblStats.Text = $"  Statistics\n  ─────────────────────────\n  Status: STOPPED\n  ─────────────────────────\n  Block: {_block.Name}"; }
+            else { _lblStatus.Text = "STOPPED"; _lblStatus.ForeColor = Color.Red; _lblStats.Text = $"  Statistics\n  ──────────────────────────────────────────────────────────\n  Status: STOPPED\n  ──────────────────────────────────────────────────────────\n  Block: {_block.Name}"; }
 
             if (_dgvWatch.IsCurrentCellInEditMode) return;
 
@@ -305,7 +538,6 @@ namespace SCL_Interface_Tool
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             using Font valFont = new Font("Consolas", 8, FontStyle.Bold);
 
-            // Draw status badge
             if (_engine.IsRunning && !_engine.IsPaused) { g.FillRectangle(Brushes.LimeGreen, 10, 10, 70, 18); g.DrawString("RUNNING", valFont, Brushes.White, 14, 12); }
             else if (_engine.IsPaused) { g.FillRectangle(Brushes.DarkOrange, 10, 10, 70, 18); g.DrawString("PAUSED", valFont, Brushes.White, 16, 12); }
             else { g.FillRectangle(Brushes.Crimson, 10, 10, 70, 18); g.DrawString("STOPPED", valFont, Brushes.White, 13, 12); }
@@ -328,38 +560,25 @@ namespace SCL_Interface_Tool
                     int tagWidth = Math.Max((int)textSize.Width + 8, minBoxWidth);
 
                     int yCenter = el.DisplayBounds.Y + (el.DisplayBounds.Height / 2);
-                    int yPos = yCenter - 8; // Tag height is 16, so -8 centers it
+                    int yPos = yCenter - 8;
 
                     RectangleF tagRect;
 
                     if (el.Direction == ElementDirection.Input || el.Direction == ElementDirection.InOut)
                     {
                         int rightEdge = el.DisplayBounds.Right - 45;
-
-                        // 1. THE ABSOLUTE ERASER: Scrub a 55x30px white area clean
                         g.FillRectangle(Brushes.White, rightEdge - 50, yCenter - 15, 55, 30);
-
-                        // 2. REDRAW THE WIRE: Put the connection line back
                         g.DrawLine(Pens.Black, rightEdge - 50, yCenter, rightEdge + 5, yCenter);
-
-                        // 3. Define Tag Position
                         tagRect = new RectangleF(rightEdge - tagWidth, yPos, tagWidth, 16);
                     }
-                    else // Outputs
+                    else
                     {
                         int leftEdge = el.DisplayBounds.Left + 45;
-
-                        // 1. THE ABSOLUTE ERASER: Scrub a 55x30px white area clean
                         g.FillRectangle(Brushes.White, leftEdge - 5, yCenter - 15, 55, 30);
-
-                        // 2. REDRAW THE WIRE: Put the connection line back
                         g.DrawLine(Pens.Black, leftEdge - 5, yCenter, leftEdge + 50, yCenter);
-
-                        // 3. Define Tag Position
                         tagRect = new RectangleF(leftEdge, yPos, tagWidth, 16);
                     }
 
-                    // Draw Tag Background
                     Brush bgBrush = Brushes.WhiteSmoke;
                     if (mem.CurrentValue is bool b2) bgBrush = b2 ? Brushes.LightGreen : Brushes.LightGray;
                     else bgBrush = Brushes.LightCyan;
@@ -367,14 +586,11 @@ namespace SCL_Interface_Tool
                     g.FillRectangle(bgBrush, tagRect);
                     g.DrawRectangle(Pens.Gray, tagRect.X, tagRect.Y, tagRect.Width, tagRect.Height);
 
-                    // Draw Centered Text
                     float textX = tagRect.X + (tagRect.Width - textSize.Width) / 2;
                     g.DrawString(txt, valFont, Brushes.Black, textX, tagRect.Y + 2);
                 }
             }
         }
-
-
 
         private void RestartSimulation()
         {

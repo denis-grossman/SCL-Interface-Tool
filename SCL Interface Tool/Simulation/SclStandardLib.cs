@@ -5,6 +5,13 @@ namespace SCL_Interface_Tool.Simulation
 {
     public static class SclStandardLib
     {
+        public static bool UseVirtualTime = false;
+        public static long VirtualTickCount = 0;
+
+        public static long GetTickCount()
+        {
+            return UseVirtualTime ? VirtualTickCount : Environment.TickCount64;
+        }
         #region --- Math Functions ---
 
         public static float ABS(float val) => Math.Abs(val);
@@ -236,8 +243,8 @@ namespace SCL_Interface_Tool.Simulation
             {
                 if (IN)
                 {
-                    if (!_timing) { _startTime = Environment.TickCount64; _timing = true; }
-                    ET = (int)Math.Min(Environment.TickCount64 - _startTime, PT); Q = ET >= PT;
+                    if (!_timing) { _startTime = GetTickCount(); _timing = true; }
+                    ET = (int)Math.Min(GetTickCount()  - _startTime, PT); Q = ET >= PT;
                 }
                 else { Q = false; ET = 0; _timing = false; }
             }
@@ -253,10 +260,10 @@ namespace SCL_Interface_Tool.Simulation
                 if (IN) { Q = true; ET = 0; _timing = false; }
                 else
                 {
-                    if (!_timing && Q) { _startTime = Environment.TickCount64; _timing = true; }
+                    if (!_timing && Q) { _startTime = GetTickCount() ; _timing = true; }
                     if (_timing)
                     {
-                        ET = (int)Math.Min(Environment.TickCount64 - _startTime, PT);
+                        ET = (int)Math.Min(GetTickCount()  - _startTime, PT);
                         if (ET >= PT) { Q = false; _timing = false; }
                     }
                 }
@@ -270,10 +277,10 @@ namespace SCL_Interface_Tool.Simulation
             public int ET { get; private set; }
             public void Execute(bool IN, int PT)
             {
-                if (IN && !_active && !Q) { Q = true; _active = true; _startTime = Environment.TickCount64; }
+                if (IN && !_active && !Q) { Q = true; _active = true; _startTime = GetTickCount() ; }
                 if (_active)
                 {
-                    ET = (int)Math.Min(Environment.TickCount64 - _startTime, PT);
+                    ET = (int)Math.Min(GetTickCount()  - _startTime, PT);
                     if (ET >= PT) { Q = false; _active = false; }
                 }
                 else if (!IN) { ET = 0; }
@@ -290,8 +297,8 @@ namespace SCL_Interface_Tool.Simulation
                 if (R) { Q = false; ET = 0; _prevIn = IN; return; }
                 if (IN)
                 {
-                    if (!_prevIn) _lastTick = Environment.TickCount64;
-                    long now = Environment.TickCount64; ET = (int)Math.Min(ET + (now - _lastTick), PT);
+                    if (!_prevIn) _lastTick = GetTickCount() ;
+                    long now = GetTickCount() ; ET = (int)Math.Min(ET + (now - _lastTick), PT);
                     _lastTick = now; Q = ET >= PT;
                 }
                 _prevIn = IN;
