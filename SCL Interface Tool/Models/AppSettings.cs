@@ -77,25 +77,28 @@ namespace SCL_Interface_Tool.Models
                 new LlmPrompt
                 {
                     Name = "Generate Unit Test Script",
-                    Text = @"You are an Expert Software QA Automation Engineer specializing in Siemens PLC logic. Generate an automated Unit Test Script using my custom DSL based on the expected behavior of the provided SCL block.
+                    Text = @"You are a strict, Hostile QA Automation Engineer specializing in Siemens PLC logic. Your goal is to write a test script that CATCHES bugs, commissioning bypasses, and commented-out logic. 
 
-                    CRITICAL RULES FOR PLC TESTING:
-                    1. Scan Cycle & Timers: PLCs evaluate timers per scan. If you change an input that starts a timer, you MUST execute `RUN 1 SCANS` to register the input BEFORE advancing time! 
-                       - CORRECT: SET Start = TRUE -> RUN 1 SCANS -> RUN 1000 MS -> ASSERT Out == TRUE
-                       - INCORRECT: SET Start = TRUE -> RUN 1000 MS
-                    2. State Management: If you inject a hardware fault to test edge cases, you MUST explicitly restore the input to its healthy state and test the recovery sequence before moving on to the next test.
-                    3. Order of Operations: Respect logical permissives. Do not advance time for a run-feedback delay if you haven't issued the start command yet.
-                    4. Counters/Math: If a variable increments during the test (like a clock pulse or running hours), ensure your assertions check for the NEW incremented value, not the old one.
-                    5. Intended Behavior: Base your tests on how the block *should* work based on the interface and comments. Ignore commented-out bugs in the body.
+CRITICAL RULES FOR BLACK-BOX TESTING:
+1. Test the Specification, NOT the Broken Code: Assume the provided SCL code body is full of bugs and bypasses (e.g., `///#fault := TRUE`). Do NOT write assertions designed to ""pass"" broken code! Your assertions MUST be based entirely on the intended specification derived from the variable comments (VAR_INPUT / VAR_OUTPUT) and `REGION` headers.
+   - Example: If a comment says `Fault: 1=Latched Fault`, and you drop a healthy permissive input, you MUST `ASSERT Fault == TRUE`. If the actual code is broken and doesn't latch the fault, the simulator will correctly flag it as a FAIL.
+2. Isolated Environment (No Magic): The simulator executes this block in a vacuum. External hardware does NOT exist. If the logic expects a pulsing clock, a rising edge, or a mechanical feedback (like a contactor or VFD run signal), you MUST explicitly toggle those inputs manually using `SET` commands.
+3. Scan Cycle & Timers: PLCs evaluate timers per scan. To test a timer, you MUST execute `RUN 1 SCANS` to register the input BEFORE advancing time! 
+   - CORRECT: SET Start = TRUE -> RUN 1 SCANS -> RUN 1000 MS -> ASSERT Out == TRUE
+   - INCORRECT: SET Start = TRUE -> RUN 1000 MS
+4. State Management: If you inject a fault, you MUST explicitly restore the input to its healthy state and test the recovery sequence.
+5. Counters: If a variable increments during the test, ensure your assertions check for the NEW incremented value.
 
-                    DSL SYNTAX:
-                    - SET [VarName] = [Value]
-                    - RUN [X] SCANS
-                    - RUN [X] MS
-                    - ASSERT [VarName] == [Value]
+DSL SYNTAX:
+- SET [VarName] = [Value]
+- RUN [X] SCANS
+- RUN [X] MS
+- ASSERT [VarName] == [Value]
 
-                    Provide ONLY the raw script code. No markdown formatting (```) or conversational text.
-                    Code: "
+Provide ONLY the raw script code. No markdown formatting (```) or conversational text.
+
+
+                    Source SCL Code to be tested: "
                 },
                 new LlmPrompt { Name = "Code Review", Text = "You are a Senior Siemens PLC Automation Engineer. Please perform a rigorous code review of the following SCL (Structured Control Language) code. Focus on:\n1. Potential logical bugs, race conditions, or unhandled edge cases.\n2. Safety considerations (e.g., missing interlocks).\n3. Siemens TIA Portal best practices (e.g., optimized block access, data type alignment, timer usage).\n4. Code readability and maintainability.\nProvide constructive feedback and code snippets for suggested improvements.\n\nCode:\n" },
                 new LlmPrompt { Name = "Explain Logic", Text = "You are an expert control systems engineer mentoring a junior automation engineer. Explain the exact functionality of the following Siemens SCL logic in a clear and educational manner. Structure your explanation as follows:\n1. High-Level Purpose: What does this block do?\n2. Key Interface Elements: Explain the critical inputs and outputs.\n3. Step-by-Step Logic Breakdown: Explain the state machines, timers, or mathematical operations occurring inside.\n4. Real-world physical analogy (if applicable).\n\nCode:\n" },

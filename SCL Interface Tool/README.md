@@ -1,108 +1,116 @@
-﻿# 🏭 SCL Interface Extractor, Editor, Simulator & FBD Generator
+﻿# SCL Ninja
 
-![.NET](https://img.shields.io/badge/.NET-WinForms-512BD4?style=flat&logo=.net)
-![Siemens SCL](https://img.shields.io/badge/Language-SCL%20%2F%20IEC--61131--3-blue)
-![Roslyn](https://img.shields.io/badge/Engine-Roslyn_C%23_Scripting-purple)
-![License](https://img.shields.io/badge/License-MIT-green)
+A powerful, standalone "little beast" of a desktop application designed for Siemens PLC Automation Engineers. This tool allows you to parse raw Siemens SCL (Structured Control Language) code, automatically generate TIA Portal-style FBD-like graphical views, simulate execution in real-time without physical hardware, run automated Unit Tests (TDD), and leverage Local AI (Ollama) to aggressively QA and refactor your logic securely offline.
 
-A powerful, standalone Windows desktop application designed for Siemens PLC Programmers (TIA Portal / STEP 7). 
+**Author:**  DNT  
+**Website:** [www.lacum.ru](http://www.lacum.ru) 
 
-This tool provides a high-performance **SCL code editor**, automatically extracts block interfaces, generates pixel-perfect **Function Block Diagram (FBD)** images, features a built-in **AI/LLM prompt generator**, and now includes a **Live Local Simulation Engine** to test your logic instantly without needing TIA Portal or PLCSIM.
+📥 **[Download the latest release here](https://github.com/MY_GITHUB_NAME/SCL_Ninja/releases)**
 
-![App Screenshot](docs/screenshot.png) *(Note: Add the new simulation screenshot here)*
+---
 
 ## ✨ Key Features
 
-### ▶️ Live Local SCL Simulation Engine (New!)
-* **No PLC Required**: Instantly transpile, compile, and execute your Siemens SCL logic locally using a built-in Roslyn C# scripting engine.
-* **Interactive Watch Table**: Monitor and force variables in real-time. Automatically flattens complex `STRUCT` and `ARRAY` data types into individual, easily editable rows.
-* **Animated FBD View**: Watch your block execute live! Dynamic tags are overlaid directly onto the generated FBD image (Green for `TRUE`, Grey for `FALSE`, plus live numeric/string values).
-* **Extensive SCL Support**: Fully supports `IF`, `CASE`, `FOR`, `WHILE`, `REPEAT...UNTIL`, standard math/string/bitwise functions, type conversions, edge triggers (`R_TRIG`, `F_TRIG`), timers (`TON`, `TOF`, `TP`), and counters (`CTU`, `CTD`).
-* **Real-Time Diagnostics**: Track code execution cycle times down to the microsecond (µs), including Min/Max cycle tracking and total scan counts.
-* **Hot Reload**: Modify your SCL code on the fly and click **"Apply Code Changes"** to seamlessly recompile and resume testing without losing your forced memory states.
+### 🧩 1. Advanced SCL Parsing & FBD-Like Generation
+*   **Intelligent Parsing:** Instantly extracts variables (`VAR_INPUT`, `VAR_OUTPUT`, `VAR_IN_OUT`, `VAR`, `STAT`, `TEMP`) from raw SCL code.
+*   **FBD-Like Graphics:** Dynamically renders a clean, pixel-perfect Function Block Diagram-style image to visualize the block's interface.
+*   **Interactive View:** Zoom, pan, and hover over pins to read parameter comments. Copy to clipboard or export as PNG for machine documentation.
 
-### 📝 High-Performance SCL Code Editor
-* **Flicker-Free Text Engine**: Built on `FastColoredTextBox` for a true Notepad++ style editing experience capable of handling massive SCL files effortlessly.
-* **Real-time Syntax Highlighting**: Custom highlighting rules optimized for SCL (Keywords, Timers, Math functions, Strings, Comments).
-* **Smart Recursive Folding**: Accurately collapses nested `IF`, `CASE`, `FOR`, `REGION`, and `FUNCTION_BLOCK` sections deep-to-surface. Intelligently ignores keywords hidden inside strings or comments.
-* **Persistent Workspace**: The app automatically saves your code, window layouts, splitter positions, and hidden grid columns upon closing and restores them on your next launch.
-* **File I/O**: Quickly import from or export to `.scl` or `.txt` files.
+### ⚙️ 2. Real-Time Simulation Engine
+*   **Roslyn C# Transpilation:** Converts SCL logic to C# and executes it in a high-speed background loop (OB1-style continuous scan).
+*   **Standard Library Support:** Accurately simulates IEC Timers (`TON`, `TOF`, `TP`, `TONR`), Counters (`CTU`, `CTD`), Edge Detectors (`R_TRIG`, `F_TRIG`), and standard math/string functions.
+*   **Live Watch Table:** Monitor and force booleans, primitives, arrays, and nested structures in real-time without pausing execution.
 
-### 🔍 Interface Extraction & Parsing
-* **Multi-Block Support**: Paste a file containing dozens of `FUNCTION_BLOCK`, `FUNCTION`, `DATA_BLOCK`, and `TYPE` (UDT/ENUM) definitions. The tool handles them all simultaneously.
-* **Intelligent Parsing**: Accurately separates **Data Types**, **Initial Values** (`:=`), **System Attributes/Pragmas** (`{...}`), and **Comments** (`//` and `(* *)`).
-* **Interactive Data Grid**: 
-  * Auto-sizing columns that adapt to your variable names.
-  * Right-click header to easily toggle column visibility (saved automatically).
-  * Copy selections to the clipboard (with or without headers) for easy pasting into Excel or TIA Portal.
+### 🧪 3. Automated Unit Testing (TDD)
+*   **Custom Test DSL:** Write highly readable testing scripts to validate your block's behavior deterministically.
+*   **Virtual Clock:** Timers execute instantly in the test environment (e.g., `RUN 1000 MS` evaluates exactly 1 second of logic without making you wait).
+*   **Delta Logging:** Keeps test reports clean by only logging variables that actually changed state during a command.
+*   **Save/Load:** Build a permanent library of `.scltest` files for your standard blocks.
 
-### 🖼️ TIA-Style FBD Image Generation
-* **Pixel-Perfect Rendering**: Automatically generates an FBD representation of your block that looks exactly like Siemens TIA Portal.
-* **Dynamic Layout Engine**: Automatically measures text length and calculates block heights and widths so long variable names *never* overlap.
-* **Instance DB Headers**: Automatically renders the dashed `"iDB_<BlockName>"` Instance Data Block header for Function Blocks.
-* **Smart Comment Wrapping**: Toggle on "Show Comments" to render multi-line comments directly on the FBD pins.
-* **Export**: Copy the generated block diagram directly to your clipboard or save it as a high-resolution `.png` file.
+### 🤖 4. Offline AI Co-Pilot (Ollama Integration)
+*   **Complete Privacy:** Connects to your local Ollama instance so your proprietary code never leaves your laptop.
+*   **Real-Time Streaming:** Watch the AI "think" and stream its response live into the UI without freezing the application.
+*   **Hostile QA Generation:** Click a button to have the AI write an aggressive Unit Test script designed specifically to catch commissioning bypasses and bugs based on your comments.
+*   **One-Click Code Apply:** Ask the AI to refactor your code, and click "Apply to Editor" to safely extract the SCL and update your workspace instantly.
 
-### 🤖 Built-In AI / LLM Integrations
-Streamline your workflow by instantly formatting your SCL code into highly optimized prompts ready to be pasted into ChatGPT, Claude, or DeepSeek. 
-* Includes customizable, built-in engineering prompts:
-  * **Code Review:** Identify bugs, race conditions, and best practice violations.
-  * **Explain Logic:** Break down complex state machines for junior engineers.
-  * **Generate Test Cases:** Create Markdown QA test matrices (nominal and edge cases).
-  * **Create Documentation:** Generate external manual-ready documentation for your blocks.
-  * **Soft Refactoring:** Add regions and clean up comments without changing execution flow.
-  * **Deep Refactoring:** Architecturally optimize execution speed and simplify complex nested conditions.
-* Manage, edit, and save your own custom prompts via the Settings menu.
+---
 
-## 🚀 Use Cases
-* **Logic Commissioning & Pre-Testing**: Write and fully simulate complex math, array sorting, or state machine logic entirely offline before ever opening TIA Portal.
-* **AI-Assisted Development**: Rapidly generate test cases or refactor legacy SCL code using the built-in LLM prompt generator.
-* **Documentation**: Instantly generate visual FBD representations of your SCL logic blocks for user manuals, functional specifications, or handover documents.
-* **Code Review**: Quickly extract and review the interface of massive, undocumented SCL files.
-* **Reverse Engineering**: Analyze exported SCL source files from older projects to understand data structures and block inputs/outputs.
+## ⚠️ Supported Features & Limitations
 
-## 🛠️ Built With
-* **C# / .NET** (Windows Forms)
-* **[Microsoft.CodeAnalysis.CSharp.Scripting](https://github.com/dotnet/roslyn)** - Roslyn compiler for on-the-fly SCL-to-C# transpilation and execution.
-* **[FastColoredTextBox (FCTB)](https://github.com/PavelTorgashov/FastColoredTextBox)** - High-performance text editor component.
-* **System.Drawing (GDI+)** - Custom rendering engine for FBD graphics and live simulation animation.
-* **System.Text.Json** - Settings and prompt serialization.
+The transpiler supports a massive subset of IEC 61131-3 standard logic, but it is a standalone simulation engine, not a 1:1 replacement for an actual Siemens CPU.
 
-## 💻 Getting Started
+**✅ Fully Supported:**
+* **Timers:** `TON`, `TOF`, `TP`, `TONR` (Evaluated deterministically per scan)
+* **Counters:** `CTU`, `CTD`, `CTUD`
+* **Edge Detection:** `R_TRIG`, `F_TRIG`
+* **Math/Trig:** `ABS`, `SQRT`, `SIN`, `COS`, `TAN`, `LIMIT`, `SCALE_X`, `NORM_X`
+* **Logic:** `IF/ELSIF`, `CASE`, `FOR`, `WHILE`, `REPEAT` loops.
+* **Data Types:** Arrays (e.g., `Array[0..10] of Int`), Structs, Primitives.
+
+**❌ Current Limitations (Will cause compile errors):**
+* **Hardware-specific Functions:** Instructions interacting with physical IO modules or Siemens diagnostics (e.g., `RD_SYS_T`, `WRREC`, `DPWR_DAT`) cannot be simulated.
+* **Nested FB Calls:** Currently, the simulator executes a single, standalone block. You cannot simulate a block that calls another custom `FUNCTION_BLOCK` internally.
+* **Absolute Addressing:** Direct memory references (e.g., `%M0.0`, `%DB1.DBW2`) are not supported. Use symbolic tags.
+
+---
+
+## 🚀 Getting Started
 
 ### Prerequisites
-* Visual Studio 2022 (or newer).
-* .NET SDK (8.0 or newer recommended).
+*   Windows OS (WinForms)
+*   .NET 8.0 (or higher)
 
-### Installation
-1. Clone the repository:
+### 🦙 Setting up Local AI (Ollama)
+To use the offline AI Co-Pilot, you need to install Ollama. It acts as a lightweight, invisible server running on your computer that SCL Ninja communicates with.
+
+**Step 1: Install Ollama**
+1. Go to **[Ollama.com/download](https://ollama.com/download)** and download the Windows installer.
+2. Run the installer. Once finished, Ollama will run quietly in your Windows system tray.
+
+**Step 2: Download a Coding Model**
+Ollama needs an AI "brain" (model) to run. For standard laptops without dedicated NVIDIA graphics cards, small coding models are highly recommended so they run fast on your CPU.
+1. Open Windows **Command Prompt** (cmd) or **PowerShell**.
+2. Type the following command to download and run a highly capable, lightweight model (a 1.5 Billion parameter model, approx ~1GB download):
    ```bash
-   git clone https://github.com/YourUsername/SCL-Interface-Extractor.git
+   ollama run qwen2.5-coder:1.5b
    ```
-2. Open the `.sln` file in Visual Studio.
-3. Restore NuGet packages (Ensure `FastColoredTextBox` and `Microsoft.CodeAnalysis.CSharp.Scripting` are downloaded).
-4. Build and run the application (`F5`).
+   *(Alternatively, if you have 16GB+ RAM and want a smarter model, try: `ollama run deepseek-coder:6.7b`)*
+3. Wait for the download to finish. Once you see a `>>>` prompt, the model is successfully installed! You can close the command prompt.
 
-## 📖 How to Use
-1. **Paste or Import** your SCL code into the editor on the left. Include any `TYPE` or `DATA_BLOCK` dependencies above your main block.
-2. Click **Parse SCL**. The tool will analyze the syntax and extract the blocks.
-3. Select a specific block from the **"Select Block"** dropdown menu.
-4. Click **Simulate Block** to open the live environment.
-5. In the Simulation Window, click **▶ Start**, then double-click values in the grid to test your logic live!
-6. Click **Generate FBD Image** to open the static, interactive image preview window for documentation export.
-7. Use the **🤖 Copy for LLM** dropdown on the top toolbar to instantly format your code for AI analysis.
+**Step 3: Connect SCL Ninja**
+1. Open SCL Ninja and click the **⚙️ Settings** button on the top toolbar.
+2. Under the "Offline Local AI" section, ensure the API URL is set to `http://localhost:11434`.
+3. Click the **🔄 Fetch Models** button. The app will connect to Ollama and populate the dropdown.
+4. Select your downloaded model (`qwen2.5-coder:1.5b`) and click **Save & Close**. You are ready to use the AI!
+
+---
+
+## 📖 Automated Testing DSL Guide
+
+The Automated Testing tab uses a custom, easy-to-read Domain Specific Language (DSL). Because the simulator executes in a perfect vacuum (no external hardware), **you must manually drive all physical inputs** (including clock pulses and run feedbacks).
+
+### Syntax Rules
+*   `SET [Variable] = [Value]` (Force an input, InOut, or static tag).
+*   `RUN [X] SCANS` (Execute the logic loop X times).
+*   `RUN [X] MS` (Advance the virtual clock by X milliseconds instantly).
+*   `ASSERT [Variable] == [Value]` (Verify an output. Fails the test if it doesn't match).
+
+### ⚠️ The Golden Rule of Timers
+Just like a real Siemens PLC, a timer (`TON`, `TOF`, `TP`) must evaluate a change in state *during a scan* before it starts timing. **Always run 1 scan after changing an input before advancing time.**
+
+```text
+// ❌ WRONG (Timer won't start, virtual clock jumped before scan evaluated input)
+SET StartMotor = TRUE
+RUN 2000 MS
+ASSERT MotorRunning == TRUE
+
+// ✅ CORRECT
+SET StartMotor = TRUE
+RUN 1 SCANS         // <--- Timer sees IN = TRUE and registers start time
+RUN 2000 MS         // <--- Virtual clock jumps 2 seconds
+ASSERT MotorRunning == TRUE
+```
 
 ## 🤝 Contributing
-Contributions are welcome! If you have suggestions for improving the parser, expanding the simulated standard library, or adding new FBD styling options, please fork the repository and create a pull request.
-
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-## 📄 License
-Distributed under the MIT License. See `LICENSE` for more information.
-
-***
-*Disclaimer: This tool is an independent open-source project and is not affiliated with, endorsed by, or sponsored by Siemens AG. TIA Portal and STEP 7 are trademarks of Siemens.*
+Feel free to open issues or submit pull requests to add support for missing standard library instructions, improve UI panel docking, or enhance the AI prompting strategies!
+```

@@ -9,8 +9,10 @@ using System.Drawing;
 using System.Globalization;
 using System.Linq;
 using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using ExecutionContext = SCL_Interface_Tool.Simulation.ExecutionContext;
@@ -39,7 +41,10 @@ namespace SCL_Interface_Tool
         private long _maxCycleUs;
         private long _lastCycleUs;
 
-        // Custom Flattened Data Model
+        // Cancellation switch for background AI tasks
+        private CancellationTokenSource _ollamaCts;
+        private Button _btnStopAi; // NEW STOP BUTTON
+
         public class WatchRow
         {
             public string Name { get; set; }
@@ -48,7 +53,7 @@ namespace SCL_Interface_Tool
             public string LiveValue { get; set; }
             public string Comment { get; set; }
             public string ParentName { get; set; }
-            public object SubKey { get; set; } // int for array index, string for dict key
+            public object SubKey { get; set; }
             public bool IsBool { get; set; }
         }
 
@@ -69,7 +74,7 @@ namespace SCL_Interface_Tool
 
         public SimulationForm(SclBlock block, Func<string> getCode, GdiFbdImageGenerator imageGen)
         {
-            _appSettings = AppSettings.Load(); // Load Ollama Settings
+            _appSettings = AppSettings.Load();
             _block = block;
             _getCode = getCode;
             _baseImage = imageGen.GenerateImage(block, false);
@@ -85,11 +90,8 @@ namespace SCL_Interface_Tool
 
             int imgW = _baseImage.Width + 30;
             int imgH = _baseImage.Height + 20;
-            this.Size = new Size(Math.Max(1300, imgW + 500), Math.Max(700, imgH + 200)); // Slightly wider for AI buttons
+            this.Size = new Size(Math.Max(1300, imgW + 500), Math.Max(700, imgH + 200));
 
-            // =========================================================
-            // 1. GLOBAL TOOLSTRIP
-            // =========================================================
             ToolStrip ts = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden, Padding = new Padding(5) };
             var btnStart = new ToolStripButton("▶ Start", null, (s, e) => _engine?.Start()) { ForeColor = Color.Green, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
             var btnPause = new ToolStripButton("⏸ Pause", null, (s, e) => _engine?.Pause()) { ForeColor = Color.DarkOrange, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
@@ -101,20 +103,13 @@ namespace SCL_Interface_Tool
             ts.Items.AddRange(new ToolStripItem[] { btnStart, btnPause, btnStop, new ToolStripSeparator(), btnRestart, btnReload, new ToolStripSeparator(), _lblStatus });
             this.Controls.Add(ts);
 
-            // =========================================================
-            // 2. MAIN LAYOUT CONTAINER
-            // =========================================================
             TableLayoutPanel mainLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, CellBorderStyle = TableLayoutPanelCellBorderStyle.Single };
             mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
             mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, imgW));
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
 
-            // =========================================================
-            // 3. LEFT PANEL: TAB CONTROL (Watch Table & Auto-Test)
-            // =========================================================
             TabControl tabLeft = new TabControl { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
 
-            // --- TAB 1: Live Watch Table ---
             TabPage tabWatch = new TabPage("🔍 Live Watch Table");
             _dgvWatch = new SimDataGridView { Dock = DockStyle.Fill, AllowUserToAddRows = false, RowHeadersVisible = false, SelectionMode = DataGridViewSelectionMode.CellSelect, EditMode = DataGridViewEditMode.EditOnKeystrokeOrF2, BackgroundColor = Color.White, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None };
             _boldFont = new Font(_dgvWatch.Font, FontStyle.Bold);
@@ -123,11 +118,9 @@ namespace SCL_Interface_Tool
             _dgvWatch.CellDoubleClick += DgvWatch_CellDoubleClick;
             tabWatch.Controls.Add(_dgvWatch);
 
-            // --- TAB 2: Automated Testing Suite ---
             TabPage tabTest = new TabPage("⚙️ Automated Testing");
             SplitContainer splitTest = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 250 };
 
-            // DSL Editor setup
             FastColoredTextBoxNS.FastColoredTextBox rtbScript = new FastColoredTextBoxNS.FastColoredTextBox
             {
                 Dock = DockStyle.Fill,
@@ -147,93 +140,197 @@ namespace SCL_Interface_Tool
             };
             rtbScript.Text = "// Click '🤖 Generate via AI' to automatically write a script\n";
 
-            // Auto-Test Top Toolbar (With Save/Load & AI Buttons)
+            // --- REDESIGNED AI TOOLBAR (WITH STOP BUTTON) ---
             Panel pnlTestTop = new Panel { Dock = DockStyle.Top, Height = 35 };
-            Button btnRunTest = new Button { Text = "▶ Run Script", Left = 5, Top = 5, Width = 95, BackColor = Color.LightGreen, Font = new Font("Segoe UI", 8, FontStyle.Bold) };
-            Button btnLoadTest = new Button { Text = "📂 Load", Left = 105, Top = 5, Width = 60, Font = new Font("Segoe UI", 8, FontStyle.Regular) };
-            Button btnSaveTest = new Button { Text = "💾 Save", Left = 170, Top = 5, Width = 60, Font = new Font("Segoe UI", 8, FontStyle.Regular) };
-            Button btnHelp = new Button { Text = "💡 Help", Left = 235, Top = 5, Width = 60, Font = new Font("Segoe UI", 8, FontStyle.Regular) };
-            Button btnGenAI = new Button { Text = "🤖 Generate via AI", Left = 300, Top = 5, Width = 135, Font = new Font("Segoe UI", 8, FontStyle.Bold), ForeColor = Color.DarkViolet };
-            Button btnAnalyzeAI = new Button { Text = "🧠 Analyze Logs", Left = 440, Top = 5, Width = 115, Font = new Font("Segoe UI", 8, FontStyle.Bold), ForeColor = Color.DarkBlue };
+            Button btnRunTest = new Button { Text = "▶ Run Script", Left = 5, Top = 5, Width = 90, BackColor = Color.LightGreen, Font = new Font("Segoe UI", 8, FontStyle.Bold) };
+            Button btnLoadTest = new Button { Text = "📂 Load", Left = 100, Top = 5, Width = 55, Font = new Font("Segoe UI", 8, FontStyle.Regular) };
+            Button btnSaveTest = new Button { Text = "💾 Save", Left = 160, Top = 5, Width = 55, Font = new Font("Segoe UI", 8, FontStyle.Regular) };
+            Button btnHelp = new Button { Text = "💡 Help", Left = 220, Top = 5, Width = 55, Font = new Font("Segoe UI", 8, FontStyle.Regular) };
 
-            pnlTestTop.Controls.AddRange(new Control[] { btnRunTest, btnLoadTest, btnSaveTest, btnHelp, btnGenAI, btnAnalyzeAI });
+            Button btnGenAI = new Button { Text = "🤖 Generate", Left = 280, Top = 5, Width = 95, Font = new Font("Segoe UI", 8, FontStyle.Bold), ForeColor = Color.DarkViolet };
+            Button btnAnalyzeAI = new Button { Text = "🧠 Analyze", Left = 380, Top = 5, Width = 90, Font = new Font("Segoe UI", 8, FontStyle.Bold), ForeColor = Color.DarkBlue };
+
+            // NEW STOP BUTTON
+            _btnStopAi = new Button { Text = "⏹ Stop", Left = 475, Top = 5, Width = 65, Enabled = false, Font = new Font("Segoe UI", 8, FontStyle.Bold), ForeColor = Color.DarkRed };
+            _btnStopAi.Click += (s, e) => { _ollamaCts?.Cancel(); _btnStopAi.Enabled = false; };
+
+            pnlTestTop.Controls.AddRange(new Control[] { btnRunTest, btnLoadTest, btnSaveTest, btnHelp, btnGenAI, btnAnalyzeAI, _btnStopAi });
 
             RichTextBox rtbLog = new RichTextBox { Dock = DockStyle.Fill, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.LightGray, Font = new Font("Consolas", 9), ReadOnly = true };
 
-            // --- FILE I/O ---
-            btnLoadTest.Click += (s, e) =>
-            {
-                using (OpenFileDialog ofd = new OpenFileDialog { Filter = "SCL Test Files (*.scltest)|*.scltest|Text Files (*.txt)|*.txt", Title = "Load Unit Test" })
-                {
-                    if (ofd.ShowDialog() == DialogResult.OK) rtbScript.Text = System.IO.File.ReadAllText(ofd.FileName);
-                }
-            };
+            btnLoadTest.Click += (s, e) => { using (OpenFileDialog ofd = new OpenFileDialog { Filter = "SCL Test Files (*.scltest)|*.scltest|Text Files (*.txt)|*.txt" }) { if (ofd.ShowDialog() == DialogResult.OK) rtbScript.Text = System.IO.File.ReadAllText(ofd.FileName); } };
+            btnSaveTest.Click += (s, e) => { using (SaveFileDialog sfd = new SaveFileDialog { Filter = "SCL Test Files (*.scltest)|*.scltest", DefaultExt = "scltest", FileName = $"{_block.Name}_Test.scltest" }) { if (sfd.ShowDialog() == DialogResult.OK) { System.IO.File.WriteAllText(sfd.FileName, rtbScript.Text); MessageBox.Show("Test script saved!", "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information); } } };
+            btnHelp.Click += (s, e) => MessageBox.Show("DSL Syntax Guide:\n\n1. SET Variable = Value\n2. RUN [X] SCANS\n3. RUN [X] MS\n4. ASSERT Variable == Value", "Auto-Test Help", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
-            btnSaveTest.Click += (s, e) =>
-            {
-                using (SaveFileDialog sfd = new SaveFileDialog { Filter = "SCL Test Files (*.scltest)|*.scltest|Text Files (*.txt)|*.txt", DefaultExt = "scltest", FileName = $"{_block.Name}_Test.scltest" })
-                {
-                    if (sfd.ShowDialog() == DialogResult.OK)
-                    {
-                        System.IO.File.WriteAllText(sfd.FileName, rtbScript.Text);
-                        MessageBox.Show("Test script saved successfully!", "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
-                }
-            };
-
-            btnHelp.Click += (s, e) => MessageBox.Show("DSL Syntax Guide:\n\n1. SET Variable = Value\n2. RUN [X] SCANS\n3. RUN [X] MS (Advances Timers instantly)\n4. ASSERT Variable == Value\n\nNotes:\n- Arrays: MyArray[0]\n- Structs: MyStruct.Field\n- Syntax is Case-Insensitive.\n- Prefix comments with //", "Auto-Test Help", MessageBoxButtons.OK, MessageBoxIcon.Information);
-
-            // --- OLLAMA AI GENERATION ---
+            // =========================================================
+            // OLLAMA REAL-TIME STREAMING: GENERATE SCRIPT
+            // =========================================================
             btnGenAI.Click += async (s, e) =>
             {
+                _ollamaCts?.Cancel();
+                _ollamaCts = new CancellationTokenSource();
+                var token = _ollamaCts.Token;
+
                 btnGenAI.Enabled = false;
-                btnGenAI.Text = "⏳ Thinking...";
-                Cursor = Cursors.WaitCursor;
+                _btnStopAi.Enabled = true; // Enable Stop button
+
+                rtbLog.Clear();
+                rtbLog.SelectionColor = Color.MediumPurple;
+                rtbLog.AppendText("🤖 AI is thinking... (Streaming real-time)\n\n");
 
                 string promptTemplate = _appSettings.Prompts.FirstOrDefault(p => p.Name == "Generate Unit Test Script")?.Text ?? "Generate a test.";
                 string fullPrompt = $"{promptTemplate}\n\nCode:\n{_getCode()}";
 
-                string response = await AskOllamaAsync(fullPrompt);
+                StringBuilder fullResponse = new StringBuilder();
+                int lastUpdateLength = 0;
 
-                // Clean up any markdown code blocks the LLM might have returned
-                var match = Regex.Match(response, @"```[^\n]*\n(.*?)\n```", RegexOptions.Singleline);
-                rtbScript.Text = match.Success ? match.Groups[1].Value : response.Trim();
+                System.Windows.Forms.Timer uiRefreshTimer = new System.Windows.Forms.Timer { Interval = 100 };
+                uiRefreshTimer.Tick += (senderTick, argsTick) => {
+                    if (this.IsDisposed || rtbLog.IsDisposed) return;
+                    lock (fullResponse)
+                    {
+                        if (fullResponse.Length > lastUpdateLength)
+                        {
+                            string newText = fullResponse.ToString().Substring(lastUpdateLength);
+                            lastUpdateLength = fullResponse.Length;
 
-                btnGenAI.Text = "🤖 Generate via AI";
-                btnGenAI.Enabled = true;
-                Cursor = Cursors.Default;
+                            int start = rtbLog.TextLength;
+                            rtbLog.AppendText(newText);
+                            rtbLog.Select(start, newText.Length);
+                            rtbLog.SelectionColor = Color.LightGray;
+                            rtbLog.ScrollToCaret();
+                        }
+                    }
+                };
+                uiRefreshTimer.Start();
+
+                Action<string> streamHandler = (tokenText) => {
+                    if (this.IsDisposed) return;
+                    lock (fullResponse) { fullResponse.Append(tokenText); }
+                };
+
+                await StreamOllamaAsync(fullPrompt, streamHandler, token);
+
+                uiRefreshTimer.Stop();
+                uiRefreshTimer.Dispose();
+
+                if (!this.IsDisposed && !_btnStopAi.IsDisposed) _btnStopAi.Enabled = false; // Disable Stop button
+
+                if (token.IsCancellationRequested || this.IsDisposed) return;
+
+                lock (fullResponse)
+                {
+                    if (fullResponse.Length > lastUpdateLength && !rtbLog.IsDisposed)
+                    {
+                        rtbLog.AppendText(fullResponse.ToString().Substring(lastUpdateLength));
+                        rtbLog.ScrollToCaret();
+                    }
+                }
+
+                // Parse out valid DSL
+                string finalText = fullResponse.ToString();
+                string codeOnly = Regex.Replace(finalText, @"<think>.*?</think>", "", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+                var codeMatch = Regex.Match(codeOnly, @"```[^\n]*\n(.*?)\n```", RegexOptions.Singleline);
+                if (codeMatch.Success) codeOnly = codeMatch.Groups[1].Value;
+
+                var cleanDslLines = codeOnly.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(line => line.Trim())
+                    .Where(line => {
+                        string t = line.ToUpper();
+                        return t.StartsWith("SET ") || t.StartsWith("RUN ") || t.StartsWith("ASSERT ") || t.StartsWith("//");
+                    });
+
+                string cleanScript = string.Join(Environment.NewLine, cleanDslLines);
+
+                if (!string.IsNullOrWhiteSpace(cleanScript) && !rtbScript.IsDisposed)
+                {
+                    rtbScript.Text = cleanScript + Environment.NewLine;
+                    rtbLog.SelectionStart = rtbLog.TextLength;
+                    rtbLog.SelectionColor = Color.LimeGreen;
+                    rtbLog.AppendText("\n\n✅ Generation Complete! Code filtered and moved to Script Editor.\n");
+                }
+                else if (!rtbLog.IsDisposed)
+                {
+                    rtbLog.SelectionStart = rtbLog.TextLength;
+                    rtbLog.SelectionColor = Color.Red;
+                    rtbLog.AppendText("\n\n❌ AI did not return a valid DSL script format.\n");
+                }
+
+                if (!btnGenAI.IsDisposed) btnGenAI.Enabled = true;
             };
 
-            // --- OLLAMA AI ANALYSIS ---
+            // =========================================================
+            // OLLAMA REAL-TIME STREAMING: ANALYZE LOGS
+            // =========================================================
             btnAnalyzeAI.Click += async (s, e) =>
             {
                 if (string.IsNullOrWhiteSpace(rtbLog.Text)) { MessageBox.Show("Please run a test first to generate logs.", "No Logs", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
 
+                _ollamaCts?.Cancel();
+                _ollamaCts = new CancellationTokenSource();
+                var token = _ollamaCts.Token;
+
                 btnAnalyzeAI.Enabled = false;
-                btnAnalyzeAI.Text = "⏳ Analyzing...";
-                Cursor = Cursors.WaitCursor;
+                _btnStopAi.Enabled = true; // Enable Stop button
 
                 string analysisPrompt = $"You are a Senior Siemens PLC Engineer. Analyze the following failed Unit Test execution.\n\n" +
-                                        $"--- SCL CODE ---\n{_getCode()}\n\n" +
-                                        $"--- TEST SCRIPT ---\n{rtbScript.Text}\n\n" +
-                                        $"--- EXECUTION LOG ---\n{rtbLog.Text}\n\n" +
-                                        $"Provide a short, concise analysis of why the assertions failed. Is it a real bug in the SCL code, or did the test script misunderstand the PLC Scan Cycle / Timers / Logic? How would you fix it?";
+                                        $"--- SCL CODE ---\n{_getCode()}\n\n--- TEST SCRIPT ---\n{rtbScript.Text}\n\n--- EXECUTION LOG ---\n{rtbLog.Text}\n\n" +
+                                        $"Provide a concise analysis of why the assertions failed. Is it a bug in the code, or a mistake in the test logic?";
 
-                string response = await AskOllamaAsync(analysisPrompt);
-
+                rtbLog.SelectionStart = rtbLog.TextLength;
+                rtbLog.SelectionColor = Color.Gold;
                 rtbLog.AppendText("\n\n=== 🧠 AI ANALYSIS ===\n");
-                int start = rtbLog.TextLength;
-                rtbLog.AppendText(response + "\n");
-                rtbLog.Select(start, response.Length);
-                rtbLog.SelectionColor = Color.Cyan;
-                rtbLog.ScrollToCaret();
 
-                btnAnalyzeAI.Text = "🧠 Analyze Logs";
-                btnAnalyzeAI.Enabled = true;
-                Cursor = Cursors.Default;
+                StringBuilder fullResponse = new StringBuilder();
+                int lastUpdateLength = 0;
+
+                System.Windows.Forms.Timer uiRefreshTimer = new System.Windows.Forms.Timer { Interval = 100 };
+                uiRefreshTimer.Tick += (senderTick, argsTick) => {
+                    if (this.IsDisposed || rtbLog.IsDisposed) return;
+                    lock (fullResponse)
+                    {
+                        if (fullResponse.Length > lastUpdateLength)
+                        {
+                            string newText = fullResponse.ToString().Substring(lastUpdateLength);
+                            lastUpdateLength = fullResponse.Length;
+
+                            int start = rtbLog.TextLength;
+                            rtbLog.AppendText(newText);
+                            rtbLog.Select(start, newText.Length);
+                            rtbLog.SelectionColor = Color.Cyan;
+                            rtbLog.ScrollToCaret();
+                        }
+                    }
+                };
+                uiRefreshTimer.Start();
+
+                Action<string> streamHandler = (tokenText) => {
+                    if (this.IsDisposed) return;
+                    lock (fullResponse) { fullResponse.Append(tokenText); }
+                };
+
+                await StreamOllamaAsync(analysisPrompt, streamHandler, token);
+
+                uiRefreshTimer.Stop();
+                uiRefreshTimer.Dispose();
+
+                if (!this.IsDisposed && !_btnStopAi.IsDisposed) _btnStopAi.Enabled = false; // Disable Stop button
+
+                if (token.IsCancellationRequested || this.IsDisposed) return;
+
+                lock (fullResponse)
+                {
+                    if (fullResponse.Length > lastUpdateLength && !rtbLog.IsDisposed)
+                    {
+                        rtbLog.AppendText(fullResponse.ToString().Substring(lastUpdateLength));
+                        rtbLog.ScrollToCaret();
+                    }
+                }
+
+                if (!btnAnalyzeAI.IsDisposed) btnAnalyzeAI.Enabled = true;
             };
 
-            // --- RUN SCRIPT ---
             btnRunTest.Click += async (s, e) =>
             {
                 if (_engine == null || _context == null) return;
@@ -243,11 +340,7 @@ namespace SCL_Interface_Tool
 
                 Action<string, Color, bool> appendLog = null;
                 appendLog = (text, color, bold) => {
-                    if (rtbLog.InvokeRequired)
-                    {
-                        rtbLog.Invoke(new Action(() => appendLog(text, color, bold)));
-                        return;
-                    }
+                    if (rtbLog.InvokeRequired) { rtbLog.Invoke(new Action(() => appendLog(text, color, bold))); return; }
                     int start = rtbLog.TextLength;
                     rtbLog.AppendText(text + "\n");
                     rtbLog.Select(start, text.Length);
@@ -258,12 +351,9 @@ namespace SCL_Interface_Tool
 
                 var runner = new AutoTestRunner(_context, _engine, appendLog);
                 btnRunTest.Enabled = false;
-
                 await runner.RunScriptAsync(rtbScript.Text);
-
                 btnRunTest.Enabled = true;
                 if (wasRunning) _engine.Start();
-
                 UpdateUI();
             };
 
@@ -276,9 +366,6 @@ namespace SCL_Interface_Tool
             tabLeft.TabPages.Add(tabTest);
             mainLayout.Controls.Add(tabLeft, 0, 0);
 
-            // =========================================================
-            // 4. RIGHT PANEL: FBD GRAPHICS & STATS
-            // =========================================================
             TableLayoutPanel rightPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
             rightPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, imgH));
             rightPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
@@ -294,172 +381,132 @@ namespace SCL_Interface_Tool
             rightPanel.Controls.Add(pnlStats, 0, 1);
 
             mainLayout.Controls.Add(rightPanel, 1, 0);
-
-            // =========================================================
-            // 5. ASSEMBLE FORM & START TIMERS
-            // =========================================================
             this.Controls.Add(mainLayout);
             mainLayout.BringToFront();
 
             _uiTimer = new System.Windows.Forms.Timer { Interval = 50 };
             _uiTimer.Tick += (s, e) => UpdateUI();
-            this.FormClosing += (s, e) => { _engine?.Stop(); _uiTimer?.Stop(); _boldFont?.Dispose(); };
+
+            this.FormClosing += (s, e) => {
+                _ollamaCts?.Cancel();
+                _engine?.Stop();
+                _uiTimer?.Stop();
+                _boldFont?.Dispose();
+            };
         }
 
-        // =========================================================
-        // LOCAL OLLAMA API REQUEST HANDLER
-        // =========================================================
-        private async Task<string> AskOllamaAsync(string promptText)
+        private async Task StreamOllamaAsync(string promptText, Action<string> onTokenReceived, CancellationToken cancellationToken)
         {
             try
             {
-                using (HttpClient client = new HttpClient { Timeout = TimeSpan.FromMinutes(5) })
+                using (HttpClient client = new HttpClient { Timeout = System.Threading.Timeout.InfiniteTimeSpan })
                 {
-                    var requestBody = new { model = _appSettings.OllamaModelName, prompt = promptText, stream = false };
+                    var requestBody = new { model = _appSettings.OllamaModelName, prompt = promptText, stream = true };
                     string jsonPayload = JsonSerializer.Serialize(requestBody);
-                    var content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
-
+                    var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
                     string url = $"{_appSettings.OllamaApiUrl.TrimEnd('/')}/api/generate";
-                    HttpResponseMessage response = await client.PostAsync(url, content);
 
-                    string responseJson = await response.Content.ReadAsStringAsync();
-
-                    // If Ollama returned a 500 or 400 error, extract the exact reason from its JSON body
-                    if (!response.IsSuccessStatusCode)
+                    using (var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = content })
+                    using (var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken))
                     {
-                        try
+                        if (!response.IsSuccessStatusCode)
                         {
-                            using (JsonDocument errDoc = JsonDocument.Parse(responseJson))
+                            if (cancellationToken.IsCancellationRequested) return;
+                            string errJson = await response.Content.ReadAsStringAsync();
+                            string errMsg = errJson;
+                            try { using (JsonDocument doc = JsonDocument.Parse(errJson)) { errMsg = doc.RootElement.GetProperty("error").GetString(); } } catch { }
+                            onTokenReceived?.Invoke($"\n\n❌ [API ERROR {response.StatusCode}]: {errMsg}\n");
+                            return;
+                        }
+
+                        using (var stream = await response.Content.ReadAsStreamAsync())
+                        using (var reader = new System.IO.StreamReader(stream))
+                        {
+                            while (!reader.EndOfStream && !cancellationToken.IsCancellationRequested)
                             {
-                                string apiError = errDoc.RootElement.GetProperty("error").GetString();
-                                return $"Ollama API Error ({response.StatusCode}): {apiError}";
+                                var line = await reader.ReadLineAsync();
+                                if (string.IsNullOrWhiteSpace(line)) continue;
+
+                                using (JsonDocument doc = JsonDocument.Parse(line))
+                                {
+                                    if (doc.RootElement.TryGetProperty("response", out var respElement))
+                                    {
+                                        string token = respElement.GetString();
+                                        if (!string.IsNullOrEmpty(token) && !cancellationToken.IsCancellationRequested)
+                                        {
+                                            onTokenReceived?.Invoke(token);
+                                        }
+                                    }
+                                }
                             }
                         }
-                        catch
-                        {
-                            return $"HTTP Error {response.StatusCode}: {responseJson}";
-                        }
-                    }
-
-                    // Success parsing
-                    using (JsonDocument doc = JsonDocument.Parse(responseJson))
-                    {
-                        return doc.RootElement.GetProperty("response").GetString();
                     }
                 }
             }
+            catch (TaskCanceledException) { }
+            catch (OperationCanceledException) { }
             catch (Exception ex)
             {
-                return $"Error connecting to local AI: {ex.Message}\nEnsure Ollama is running and the selected model is installed.";
+                if (!cancellationToken.IsCancellationRequested)
+                    onTokenReceived?.Invoke($"\n\n❌ [ERROR]: {ex.Message}\nCheck Ollama connection.");
             }
         }
 
-
-        // =========================================================
-        // ENGINE & GRAPHICS LOGIC
-        // =========================================================
-        private void InitializeSimulation()
-        {
-            _context = new ExecutionContext(_block, _getCode());
-            _engine = new SimulationEngine();
-            _engine.OnError += HandleEngineError;
-            BindGrid();
-            ReloadCode();
-            _uiTimer.Start();
-        }
+        private void InitializeSimulation() { _context = new ExecutionContext(_block, _getCode()); _engine = new SimulationEngine(); _engine.OnError += HandleEngineError; BindGrid(); ReloadCode(); _uiTimer.Start(); }
 
         private void BindGrid()
         {
             _watchRows = new BindingList<WatchRow>();
-
             foreach (var m in _context.Memory.Values)
             {
                 string dt = m.DataType.ToUpper();
                 if (dt == "TON" || dt == "TOF" || dt == "TP" || dt == "TONR" || dt == "R_TRIG" || dt == "F_TRIG" || dt == "CTU" || dt == "CTD" || dt == "CTUD" || dt == "SR" || dt == "RS") continue;
                 if (m.Direction == ElementDirection.Member) continue;
-
                 string comment = _block.Elements.FirstOrDefault(el => el.Name.Equals(m.Name, StringComparison.OrdinalIgnoreCase))?.Comment ?? "";
-
-                // Flatten Arrays
                 if (m.CurrentValue is Array arr)
                 {
                     int lo = 0, hi = arr.Length - 1;
                     var match = Regex.Match(dt, @"\[\s*(\d+)\s*\.\.\s*(\d+)\s*\]");
-                    if (match.Success)
-                    {
-                        lo = int.Parse(match.Groups[1].Value); hi = int.Parse(match.Groups[2].Value); }
-
-                    for (int i = lo; i <= hi; i++)
-                        {
-                            object val = arr.GetValue(i);
-                            _watchRows.Add(new WatchRow { Name = $"{m.Name}[{i}]", ParentName = m.Name, SubKey = i, DataType = dt, Direction = m.Direction.ToString(), LiveValue = FormatPrimitive(val), Comment = comment, IsBool = val is bool });
-                        }
-                    }
-                    // Flatten Structs
-                    else if (m.CurrentValue is Dictionary<string, object> dict)
-                    {
-                        foreach (var kvp in dict)
-                        {
-                            _watchRows.Add(new WatchRow { Name = $"{m.Name}.{kvp.Key}", ParentName = m.Name, SubKey = kvp.Key, DataType = "Struct Field", Direction = m.Direction.ToString(), LiveValue = FormatPrimitive(kvp.Value), Comment = comment, IsBool = kvp.Value is bool });
-                        }
-                    }
-                    // Standard Variables
-                    else
-                    {
-                        _watchRows.Add(new WatchRow { Name = m.Name, ParentName = m.Name, SubKey = null, DataType = dt, Direction = m.Direction.ToString(), LiveValue = FormatPrimitive(m.CurrentValue), Comment = comment, IsBool = m.CurrentValue is bool });
-                    }
+                    if (match.Success) { lo = int.Parse(match.Groups[1].Value); hi = int.Parse(match.Groups[2].Value); }
+                    for (int i = lo; i <= hi; i++) { object val = arr.GetValue(i); _watchRows.Add(new WatchRow { Name = $"{m.Name}[{i}]", ParentName = m.Name, SubKey = i, DataType = dt, Direction = m.Direction.ToString(), LiveValue = FormatPrimitive(val), Comment = comment, IsBool = val is bool }); }
                 }
-
-                _dgvWatch.DataSource = _watchRows;
-                _dgvWatch.AutoResizeColumns(DataGridViewAutoSizeColumnsMode.DisplayedCells);
-                if (_dgvWatch.Columns.Contains("Name")) _dgvWatch.Columns["Name"].ReadOnly = true;
-                if (_dgvWatch.Columns.Contains("DataType")) _dgvWatch.Columns["DataType"].ReadOnly = true;
-                if (_dgvWatch.Columns.Contains("Direction")) _dgvWatch.Columns["Direction"].ReadOnly = true;
-                if (_dgvWatch.Columns.Contains("ParentName")) _dgvWatch.Columns["ParentName"].Visible = false;
-                if (_dgvWatch.Columns.Contains("SubKey")) _dgvWatch.Columns["SubKey"].Visible = false;
-                if (_dgvWatch.Columns.Contains("IsBool")) _dgvWatch.Columns["IsBool"].Visible = false;
-                if (_dgvWatch.Columns.Contains("Comment")) { _dgvWatch.Columns["Comment"].ReadOnly = true; _dgvWatch.Columns["Comment"].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill; }
-                if (_dgvWatch.Columns.Contains("LiveValue")) { _dgvWatch.Columns["LiveValue"].HeaderText = "✏️ Monitor / Force"; _dgvWatch.Columns["LiveValue"].Width = 120; }
+                else if (m.CurrentValue is Dictionary<string, object> dict)
+                {
+                    foreach (var kvp in dict) _watchRows.Add(new WatchRow { Name = $"{m.Name}.{kvp.Key}", ParentName = m.Name, SubKey = kvp.Key, DataType = "Struct Field", Direction = m.Direction.ToString(), LiveValue = FormatPrimitive(kvp.Value), Comment = comment, IsBool = kvp.Value is bool });
+                }
+                else
+                {
+                    _watchRows.Add(new WatchRow { Name = m.Name, ParentName = m.Name, SubKey = null, DataType = dt, Direction = m.Direction.ToString(), LiveValue = FormatPrimitive(m.CurrentValue), Comment = comment, IsBool = m.CurrentValue is bool });
+                }
             }
-        
-
-        private string FormatPrimitive(object val)
-        {
-            if (val is bool b) return b ? "True" : "False";
-            if (val is float f) return f.ToString("F2", CultureInfo.InvariantCulture);
-            return val?.ToString() ?? "0";
+            _dgvWatch.DataSource = _watchRows; _dgvWatch.AutoResizeColumns(DataGridViewAutoSizeColumnsMode.DisplayedCells);
+            if (_dgvWatch.Columns.Contains("Name")) _dgvWatch.Columns["Name"].ReadOnly = true;
+            if (_dgvWatch.Columns.Contains("DataType")) _dgvWatch.Columns["DataType"].ReadOnly = true;
+            if (_dgvWatch.Columns.Contains("Direction")) _dgvWatch.Columns["Direction"].ReadOnly = true;
+            if (_dgvWatch.Columns.Contains("ParentName")) _dgvWatch.Columns["ParentName"].Visible = false;
+            if (_dgvWatch.Columns.Contains("SubKey")) _dgvWatch.Columns["SubKey"].Visible = false;
+            if (_dgvWatch.Columns.Contains("IsBool")) _dgvWatch.Columns["IsBool"].Visible = false;
+            if (_dgvWatch.Columns.Contains("Comment")) { _dgvWatch.Columns["Comment"].ReadOnly = true; _dgvWatch.Columns["Comment"].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill; }
+            if (_dgvWatch.Columns.Contains("LiveValue")) { _dgvWatch.Columns["LiveValue"].HeaderText = "✏️ Monitor / Force"; _dgvWatch.Columns["LiveValue"].Width = 120; }
         }
 
-        private object ParsePrimitive(string str, object existingVal)
-        {
-            if (existingVal is bool) return str.Equals("true", StringComparison.OrdinalIgnoreCase) || str == "1";
-            if (existingVal is float) return float.TryParse(str, NumberStyles.Float, CultureInfo.InvariantCulture, out float f) ? f : 0.0f;
-            if (existingVal is string) return str;
-            if (existingVal is long) return long.TryParse(str, out long l) ? l : 0L;
-            return int.TryParse(str, out int i) ? i : 0;
-        }
+        private string FormatPrimitive(object val) { if (val is bool b) return b ? "True" : "False"; if (val is float f) return f.ToString("F2", CultureInfo.InvariantCulture); return val?.ToString() ?? "0"; }
+
+        private object ParsePrimitive(string str, object existingVal) { if (existingVal is bool) return str.Equals("true", StringComparison.OrdinalIgnoreCase) || str == "1"; if (existingVal is float) return float.TryParse(str, NumberStyles.Float, CultureInfo.InvariantCulture, out float f) ? f : 0.0f; if (existingVal is string) return str; if (existingVal is long) return long.TryParse(str, out long l) ? l : 0L; return int.TryParse(str, out int i) ? i : 0; }
 
         private void DgvWatch_CellValueChanged(object sender, DataGridViewCellEventArgs e)
         {
             if (e.RowIndex < 0 || _engine == null || e.RowIndex >= _watchRows.Count) return;
             if (_dgvWatch.Columns[e.ColumnIndex].DataPropertyName != "LiveValue") return;
-
             var row = _watchRows[e.RowIndex];
             lock (_engine.MemoryLock)
             {
                 if (_context.Memory.TryGetValue(row.ParentName, out var tag))
                 {
                     object existingVal;
-                    if (row.SubKey is int idx) existingVal = ((Array)tag.CurrentValue).GetValue(idx);
-                    else if (row.SubKey is string key) existingVal = ((Dictionary<string, object>)tag.CurrentValue)[key];
-                    else existingVal = tag.CurrentValue;
-
+                    if (row.SubKey is int idx) existingVal = ((Array)tag.CurrentValue).GetValue(idx); else if (row.SubKey is string key) existingVal = ((Dictionary<string, object>)tag.CurrentValue)[key]; else existingVal = tag.CurrentValue;
                     object newVal = ParsePrimitive(row.LiveValue, existingVal);
-
-                    if (row.SubKey is int idx2) ((Array)tag.CurrentValue).SetValue(newVal, idx2);
-                    else if (row.SubKey is string key2) ((Dictionary<string, object>)tag.CurrentValue)[key2] = newVal;
-                    else tag.CurrentValue = newVal;
-
+                    if (row.SubKey is int idx2) ((Array)tag.CurrentValue).SetValue(newVal, idx2); else if (row.SubKey is string key2) ((Dictionary<string, object>)tag.CurrentValue)[key2] = newVal; else tag.CurrentValue = newVal;
                     row.LiveValue = FormatPrimitive(newVal);
                 }
             }
@@ -469,48 +516,34 @@ namespace SCL_Interface_Tool
         {
             if (e.RowIndex < 0 || e.RowIndex >= _watchRows.Count) return;
             if (_dgvWatch.Columns[e.ColumnIndex].DataPropertyName != "LiveValue") return;
-
             var row = _watchRows[e.RowIndex];
             if (row.IsBool && (row.Direction == "Input" || row.Direction == "InOut"))
             {
-                bool current = row.LiveValue.Equals("True", StringComparison.OrdinalIgnoreCase);
-                row.LiveValue = current ? "False" : "True";
-
+                bool current = row.LiveValue.Equals("True", StringComparison.OrdinalIgnoreCase); row.LiveValue = current ? "False" : "True";
                 lock (_engine.MemoryLock)
                 {
                     if (_context.Memory.TryGetValue(row.ParentName, out var tag))
                     {
-                        if (row.SubKey is int idx) ((Array)tag.CurrentValue).SetValue(!current, idx);
-                        else if (row.SubKey is string key) ((Dictionary<string, object>)tag.CurrentValue)[key] = !current;
-                        else tag.CurrentValue = !current;
+                        if (row.SubKey is int idx) ((Array)tag.CurrentValue).SetValue(!current, idx); else if (row.SubKey is string key) ((Dictionary<string, object>)tag.CurrentValue)[key] = !current; else tag.CurrentValue = !current;
                     }
                 }
-                _dgvWatch.InvalidateRow(e.RowIndex);
-                _dgvWatch.EndEdit();
+                _dgvWatch.InvalidateRow(e.RowIndex); _dgvWatch.EndEdit();
             }
         }
 
         private void UpdateUI()
         {
             if (_engine == null) return;
-
             if (_engine.IsRunning && !_engine.IsPaused)
             {
                 _lastCycleUs = _engine.CycleTimeTicks * 1_000_000 / Stopwatch.Frequency;
-                _lblStatus.Text = $"RUNNING ({_lastCycleUs} µs)";
-                _lblStatus.ForeColor = Color.Green;
-                _scanCount++;
-                if (_lastCycleUs > 0 && _lastCycleUs < _minCycleUs) _minCycleUs = _lastCycleUs;
-                if (_lastCycleUs > _maxCycleUs) _maxCycleUs = _lastCycleUs;
-
-                _lblStats.ForeColor = Color.FromArgb(40, 60, 90);
-                _lblStats.Text = $"  Statistics\n  ──────────────────────────────────────────────────────────\n  Cycle Time:  {_lastCycleUs,8} µs\n  Min Cycle:   {_minCycleUs,8} µs\n  Max Cycle:   {_maxCycleUs,8} µs\n  Scan Count:  {_scanCount,8}\n  ──────────────────────────────────────────────────────────\n  Block: {_block.Name}";
+                _lblStatus.Text = $"RUNNING ({_lastCycleUs} µs)"; _lblStatus.ForeColor = Color.Green; _scanCount++;
+                if (_lastCycleUs > 0 && _lastCycleUs < _minCycleUs) _minCycleUs = _lastCycleUs; if (_lastCycleUs > _maxCycleUs) _maxCycleUs = _lastCycleUs;
+                _lblStats.ForeColor = Color.FromArgb(40, 60, 90); _lblStats.Text = $"  Statistics\n  ──────────────────────────────────────────────────────────\n  Cycle Time:  {_lastCycleUs,8} µs\n  Min Cycle:   {_minCycleUs,8} µs\n  Max Cycle:   {_maxCycleUs,8} µs\n  Scan Count:  {_scanCount,8}\n  ──────────────────────────────────────────────────────────\n  Block: {_block.Name}";
             }
-            else if (_engine.IsPaused) { _lblStatus.Text = "PAUSED"; _lblStatus.ForeColor = Color.DarkOrange; }
-            else { _lblStatus.Text = "STOPPED"; _lblStatus.ForeColor = Color.Red; _lblStats.Text = $"  Statistics\n  ──────────────────────────────────────────────────────────\n  Status: STOPPED\n  ──────────────────────────────────────────────────────────\n  Block: {_block.Name}"; }
+            else if (_engine.IsPaused) { _lblStatus.Text = "PAUSED"; _lblStatus.ForeColor = Color.DarkOrange; } else { _lblStatus.Text = "STOPPED"; _lblStatus.ForeColor = Color.Red; _lblStats.Text = $"  Statistics\n  ──────────────────────────────────────────────────────────\n  Status: STOPPED\n  ──────────────────────────────────────────────────────────\n  Block: {_block.Name}"; }
 
             if (_dgvWatch.IsCurrentCellInEditMode) return;
-
             lock (_engine.MemoryLock)
             {
                 for (int i = 0; i < _watchRows.Count; i++)
@@ -519,12 +552,8 @@ namespace SCL_Interface_Tool
                     if (_context.Memory.TryGetValue(row.ParentName, out var mem))
                     {
                         object val;
-                        if (row.SubKey is int idx) val = ((Array)mem.CurrentValue).GetValue(idx);
-                        else if (row.SubKey is string key) val = ((Dictionary<string, object>)mem.CurrentValue)[key];
-                        else val = mem.CurrentValue;
-
-                        string strVal = FormatPrimitive(val);
-                        if (row.LiveValue != strVal) { row.LiveValue = strVal; _dgvWatch.InvalidateRow(i); }
+                        if (row.SubKey is int idx) val = ((Array)mem.CurrentValue).GetValue(idx); else if (row.SubKey is string key) val = ((Dictionary<string, object>)mem.CurrentValue)[key]; else val = mem.CurrentValue;
+                        string strVal = FormatPrimitive(val); if (row.LiveValue != strVal) { row.LiveValue = strVal; _dgvWatch.InvalidateRow(i); }
                     }
                 }
             }
@@ -534,8 +563,7 @@ namespace SCL_Interface_Tool
         private void PbLive_Paint(object sender, PaintEventArgs e)
         {
             if (_engine == null || _context == null) return;
-            Graphics g = e.Graphics;
-            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            Graphics g = e.Graphics; g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             using Font valFont = new Font("Consolas", 8, FontStyle.Bold);
 
             if (_engine.IsRunning && !_engine.IsPaused) { g.FillRectangle(Brushes.LimeGreen, 10, 10, 70, 18); g.DrawString("RUNNING", valFont, Brushes.White, 14, 12); }
@@ -548,20 +576,11 @@ namespace SCL_Interface_Tool
                 {
                     if (!_context.Memory.TryGetValue(el.Name, out var mem)) continue;
                     if (el.DisplayBounds.Width == 0 && el.DisplayBounds.Height == 0) continue;
-
-                    string txt;
-                    if (mem.CurrentValue is Array) txt = "[ARRAY]";
-                    else if (mem.CurrentValue is Dictionary<string, object>) txt = "{STRUCT}";
-                    else if (mem.CurrentValue is bool b) txt = b ? "TRUE" : "FALSE";
-                    else txt = mem.CurrentValue.ToString();
-
+                    string txt; if (mem.CurrentValue is Array) txt = "[ARRAY]"; else if (mem.CurrentValue is Dictionary<string, object>) txt = "{STRUCT}"; else if (mem.CurrentValue is bool b) txt = b ? "TRUE" : "FALSE"; else txt = mem.CurrentValue.ToString();
                     SizeF textSize = g.MeasureString(txt, valFont);
                     int minBoxWidth = (int)g.MeasureString("FALSE", valFont).Width + 10;
                     int tagWidth = Math.Max((int)textSize.Width + 8, minBoxWidth);
-
-                    int yCenter = el.DisplayBounds.Y + (el.DisplayBounds.Height / 2);
-                    int yPos = yCenter - 8;
-
+                    int yCenter = el.DisplayBounds.Y + (el.DisplayBounds.Height / 2); int yPos = yCenter - 8;
                     RectangleF tagRect;
 
                     if (el.Direction == ElementDirection.Input || el.Direction == ElementDirection.InOut)
@@ -580,33 +599,16 @@ namespace SCL_Interface_Tool
                     }
 
                     Brush bgBrush = Brushes.WhiteSmoke;
-                    if (mem.CurrentValue is bool b2) bgBrush = b2 ? Brushes.LightGreen : Brushes.LightGray;
-                    else bgBrush = Brushes.LightCyan;
-
-                    g.FillRectangle(bgBrush, tagRect);
-                    g.DrawRectangle(Pens.Gray, tagRect.X, tagRect.Y, tagRect.Width, tagRect.Height);
-
+                    if (mem.CurrentValue is bool b2) bgBrush = b2 ? Brushes.LightGreen : Brushes.LightGray; else bgBrush = Brushes.LightCyan;
+                    g.FillRectangle(bgBrush, tagRect); g.DrawRectangle(Pens.Gray, tagRect.X, tagRect.Y, tagRect.Width, tagRect.Height);
                     float textX = tagRect.X + (tagRect.Width - textSize.Width) / 2;
                     g.DrawString(txt, valFont, Brushes.Black, textX, tagRect.Y + 2);
                 }
             }
         }
 
-        private void RestartSimulation()
-        {
-            bool wasRunning = _engine.IsRunning && !_engine.IsPaused;
-            _engine.Stop(); _context = new ExecutionContext(_block, _getCode()); _scanCount = 0; _minCycleUs = long.MaxValue; _maxCycleUs = 0;
-            BindGrid();
-            try { string script = SclTranspiler.Transpile(_getCode(), _context); _engine.Compile(script, _context); if (wasRunning) _engine.Start(); }
-            catch (Exception ex) { HandleEngineError(ex); }
-        }
-
-        private void ReloadCode()
-        {
-            bool wasRunning = _engine != null && _engine.IsRunning && !_engine.IsPaused; _engine?.Stop();
-            try { string script = SclTranspiler.Transpile(_getCode(), _context); _engine.Compile(script, _context); if (wasRunning) _engine.Start(); }
-            catch (Exception ex) { HandleEngineError(ex); }
-        }
+        private void RestartSimulation() { bool wasRunning = _engine.IsRunning && !_engine.IsPaused; _engine.Stop(); _context = new ExecutionContext(_block, _getCode()); _scanCount = 0; _minCycleUs = long.MaxValue; _maxCycleUs = 0; BindGrid(); try { string script = SclTranspiler.Transpile(_getCode(), _context); _engine.Compile(script, _context); if (wasRunning) _engine.Start(); } catch (Exception ex) { HandleEngineError(ex); } }
+        private void ReloadCode() { bool wasRunning = _engine != null && _engine.IsRunning && !_engine.IsPaused; _engine?.Stop(); try { string script = SclTranspiler.Transpile(_getCode(), _context); _engine.Compile(script, _context); if (wasRunning) _engine.Start(); } catch (Exception ex) { HandleEngineError(ex); } }
 
         private void HandleEngineError(Exception ex)
         {

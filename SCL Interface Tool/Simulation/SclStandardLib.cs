@@ -12,6 +12,7 @@ namespace SCL_Interface_Tool.Simulation
         {
             return UseVirtualTime ? VirtualTickCount : Environment.TickCount64;
         }
+
         #region --- Math Functions ---
 
         public static float ABS(float val) => Math.Abs(val);
@@ -89,7 +90,6 @@ namespace SCL_Interface_Tool.Simulation
         public static int TIME_TO_DINT(int val) => val;
         public static int DINT_TO_TIME(int val) => val;
 
-        // DATE/TOD/DT conversions
         public static long DATE_TO_DINT(long ticks) => ticks;
         public static long DINT_TO_DATE(int val) => val;
         public static long TOD_TO_DINT(long ticks) => ticks;
@@ -244,7 +244,7 @@ namespace SCL_Interface_Tool.Simulation
                 if (IN)
                 {
                     if (!_timing) { _startTime = GetTickCount(); _timing = true; }
-                    ET = (int)Math.Min(GetTickCount()  - _startTime, PT); Q = ET >= PT;
+                    ET = (int)Math.Min(GetTickCount() - _startTime, PT); Q = ET >= PT;
                 }
                 else { Q = false; ET = 0; _timing = false; }
             }
@@ -260,10 +260,10 @@ namespace SCL_Interface_Tool.Simulation
                 if (IN) { Q = true; ET = 0; _timing = false; }
                 else
                 {
-                    if (!_timing && Q) { _startTime = GetTickCount() ; _timing = true; }
+                    if (!_timing && Q) { _startTime = GetTickCount(); _timing = true; }
                     if (_timing)
                     {
-                        ET = (int)Math.Min(GetTickCount()  - _startTime, PT);
+                        ET = (int)Math.Min(GetTickCount() - _startTime, PT);
                         if (ET >= PT) { Q = false; _timing = false; }
                     }
                 }
@@ -272,18 +272,41 @@ namespace SCL_Interface_Tool.Simulation
 
         public class TP
         {
-            private long _startTime; private bool _active;
+            private long _startTime;
+            private bool _timing;
+            private bool _prevIn;
+
             public bool Q { get; private set; }
             public int ET { get; private set; }
+
             public void Execute(bool IN, int PT)
             {
-                if (IN && !_active && !Q) { Q = true; _active = true; _startTime = GetTickCount() ; }
-                if (_active)
+                // FIX: Strictly start on the RISING EDGE of IN
+                if (IN && !_prevIn && !_timing)
                 {
-                    ET = (int)Math.Min(GetTickCount()  - _startTime, PT);
-                    if (ET >= PT) { Q = false; _active = false; }
+                    _timing = true;
+                    Q = true;
+                    _startTime = GetTickCount();
+                    ET = 0;
                 }
-                else if (!IN) { ET = 0; }
+
+                if (_timing)
+                {
+                    ET = (int)Math.Min(GetTickCount() - _startTime, PT);
+                    if (ET >= PT)
+                    {
+                        _timing = false;
+                        Q = false;
+                    }
+                }
+
+                // If pulse is finished (not timing) AND IN drops low, reset the elapsed time
+                if (!_timing && !IN)
+                {
+                    ET = 0;
+                }
+
+                _prevIn = IN; // Track state for next scan
             }
         }
 
@@ -297,8 +320,8 @@ namespace SCL_Interface_Tool.Simulation
                 if (R) { Q = false; ET = 0; _prevIn = IN; return; }
                 if (IN)
                 {
-                    if (!_prevIn) _lastTick = GetTickCount() ;
-                    long now = GetTickCount() ; ET = (int)Math.Min(ET + (now - _lastTick), PT);
+                    if (!_prevIn) _lastTick = GetTickCount();
+                    long now = GetTickCount(); ET = (int)Math.Min(ET + (now - _lastTick), PT);
                     _lastTick = now; Q = ET >= PT;
                 }
                 _prevIn = IN;
