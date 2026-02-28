@@ -14,7 +14,6 @@ namespace SCL_Interface_Tool.Simulation
         }
 
         #region --- Math Functions ---
-
         public static float ABS(float val) => Math.Abs(val);
         public static int ABS(int val) => Math.Abs(val);
         public static float SQRT(float val) => (float)Math.Sqrt(val);
@@ -29,11 +28,9 @@ namespace SCL_Interface_Tool.Simulation
         public static float ACOS(float val) => (float)Math.Acos(val);
         public static float ATAN(float val) => (float)Math.Atan(val);
         public static float EXPT(float bas, float exp) => (float)Math.Pow(bas, exp);
-
         #endregion
 
         #region --- Selection & Comparison ---
-
         public static float NORM_X(float min, float value, float max)
         {
             if (max == min) return 0f;
@@ -59,20 +56,16 @@ namespace SCL_Interface_Tool.Simulation
 
         public static int MUX(int k, params int[] values) => (k >= 0 && k < values.Length) ? values[k] : 0;
         public static float MUX(int k, params float[] values) => (k >= 0 && k < values.Length) ? values[k] : 0f;
-
         #endregion
 
         #region --- Bitwise / Shift ---
-
         public static int SHL(int val, int n) => val << n;
         public static int SHR(int val, int n) => val >> n;
         public static int ROL(int val, int n) => (val << n) | (val >> (32 - n));
         public static int ROR(int val, int n) => (val >> n) | (val << (32 - n));
-
         #endregion
 
         #region --- Type Conversions ---
-
         public static int BOOL_TO_INT(bool val) => val ? 1 : 0;
         public static bool INT_TO_BOOL(int val) => val != 0;
         public static float INT_TO_REAL(int val) => (float)val;
@@ -95,11 +88,9 @@ namespace SCL_Interface_Tool.Simulation
         public static long TOD_TO_DINT(long ticks) => ticks;
         public static long DT_TO_DATE(long dtTicks) => new DateTime(dtTicks).Date.Ticks;
         public static long DT_TO_TOD(long dtTicks) => new DateTime(dtTicks).TimeOfDay.Ticks;
-
         #endregion
 
         #region --- Date/Time Helper Functions ---
-
         public static int DATE_YEAR(long ticks) => ticks == 0 ? 0 : new DateTime(ticks).Year;
         public static int DATE_MONTH(long ticks) => ticks == 0 ? 0 : new DateTime(ticks).Month;
         public static int DATE_DAY(long ticks) => ticks == 0 ? 0 : new DateTime(ticks).Day;
@@ -117,11 +108,9 @@ namespace SCL_Interface_Tool.Simulation
             TimeSpan t = new TimeSpan(todTicks);
             return (d + t).Ticks;
         }
-
         #endregion
 
         #region --- String Functions ---
-
         public static int LEN(string s) => s?.Length ?? 0;
         public static string LEFT(string s, int l) => s?.Substring(0, Math.Min(l, s.Length)) ?? "";
         public static string RIGHT(string s, int l) => s?.Substring(Math.Max(0, s.Length - l)) ?? "";
@@ -131,25 +120,19 @@ namespace SCL_Interface_Tool.Simulation
         public static string INSERT(string s1, string s2, int p) => s1 != null && p >= 1 ? s1.Insert(Math.Min(p - 1, s1.Length), s2 ?? "") : s1 ?? "";
         public static string DELETE(string s1, int l, int p) => s1 != null && p >= 1 ? s1.Remove(Math.Min(p - 1, s1.Length), Math.Min(l, s1.Length - p + 1)) : s1 ?? "";
         public static string REPLACE(string s1, string s2, int l, int p) => s1 != null && p >= 1 ? s1.Remove(p - 1, Math.Min(l, s1.Length - p + 1)).Insert(p - 1, s2 ?? "") : s1 ?? "";
-
         #endregion
 
         #region --- Array Helpers ---
-
         public static object ARRAY_GET(Dictionary<int, object> arr, int idx) => arr.ContainsKey(idx) ? arr[idx] : 0;
         public static void ARRAY_SET(Dictionary<int, object> arr, int idx, object val) { arr[idx] = val; }
-
         #endregion
 
         #region --- Struct Helpers ---
-
         public static object STRUCT_GET(Dictionary<string, object> s, string field) => s.ContainsKey(field) ? s[field] : 0;
         public static void STRUCT_SET(Dictionary<string, object> s, string field, object val) { s[field] = val; }
-
         #endregion
 
-        #region --- Edge Detectors ---
-
+        #region --- Hardware Timers & Triggers ---
         public class R_TRIG
         {
             private bool _prev;
@@ -163,10 +146,6 @@ namespace SCL_Interface_Tool.Simulation
             public bool Q { get; private set; }
             public void Execute(bool CLK) { Q = !CLK && _prev; _prev = CLK; }
         }
-
-        #endregion
-
-        #region --- Bistable (Flip-Flops) ---
 
         public class SR
         {
@@ -186,10 +165,6 @@ namespace SCL_Interface_Tool.Simulation
                 Q1 = (S || Q1) && !R1;
             }
         }
-
-        #endregion
-
-        #region --- Counters ---
 
         public class CTU
         {
@@ -229,10 +204,6 @@ namespace SCL_Interface_Tool.Simulation
                 _prevCU = CU; _prevCD = CD; QU = CV >= PV; QD = CV <= 0;
             }
         }
-
-        #endregion
-
-        #region --- Timers ---
 
         public class TON
         {
@@ -281,7 +252,6 @@ namespace SCL_Interface_Tool.Simulation
 
             public void Execute(bool IN, int PT)
             {
-                // FIX: Strictly start on the RISING EDGE of IN
                 if (IN && !_prevIn && !_timing)
                 {
                     _timing = true;
@@ -300,13 +270,12 @@ namespace SCL_Interface_Tool.Simulation
                     }
                 }
 
-                // If pulse is finished (not timing) AND IN drops low, reset the elapsed time
                 if (!_timing && !IN)
                 {
                     ET = 0;
                 }
 
-                _prevIn = IN; // Track state for next scan
+                _prevIn = IN;
             }
         }
 
@@ -327,7 +296,6 @@ namespace SCL_Interface_Tool.Simulation
                 _prevIn = IN;
             }
         }
-
         #endregion
     }
 }

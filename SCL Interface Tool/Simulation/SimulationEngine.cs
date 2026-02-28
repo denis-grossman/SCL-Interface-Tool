@@ -21,9 +21,16 @@ namespace SCL_Interface_Tool.Simulation
         public bool IsRunning { get; private set; }
         public bool IsPaused { get; private set; }
         public int CycleTimeMs { get; private set; }
-        public long CycleTimeTicks { get; private set; } // High-resolution ticks
+        public long CycleTimeTicks { get; private set; }
         public event Action<Exception> OnError;
-        public void StepScans(int count)
+
+        /// <summary>
+        /// Executes a fixed number of scan cycles. Used by "RUN X SCANS".
+        /// When virtual time mode is active (i.e., during a test session),
+        /// each scan advances the virtual clock by scanIntervalMs to keep
+        /// timers progressing realistically.
+        /// </summary>
+        public void StepScans(int count, int scanIntervalMs = 10)
         {
             if (_runner == null) return;
 
@@ -31,12 +38,73 @@ namespace SCL_Interface_Tool.Simulation
             {
                 for (int i = 0; i < count; i++)
                 {
+                    // If virtual time is active, advance clock per scan
+                    if (SclStandardLib.UseVirtualTime)
+                    {
+                        if (SclStandardLib.VirtualTickCount == 0)
+                        {
+                            SclStandardLib.VirtualTickCount = Environment.TickCount64;
+                        }
+                        SclStandardLib.VirtualTickCount += scanIntervalMs;
+                    }
+
                     _context.PrepareForNextScanCycle();
                     _runner(_globals).Wait();
-                    CycleTimeTicks++; // Just incrementing a dummy counter for stat tracking during tests
+                    CycleTimeTicks++;
                 }
             }
         }
+
+
+        /// <summary>
+        /// Advances virtual time by the specified number of milliseconds,
+        /// executing scan cycles at a realistic interval (e.g., every 10ms).
+        /// Used by "RUN X MS". This is the critical fix for TON/TOF/TP timers.
+        /// </summary>
+        /// <param name="milliseconds">Total wall-clock time to simulate.</param>
+        /// <param name="scanIntervalMs">Simulated scan interval in ms (default 10ms, typical S7-1500).</param>
+        public void StepTime(int milliseconds, int scanIntervalMs = 10)
+        {
+            if (_runner == null) return;
+
+            // Enable virtual time so TON/TOF/TP use our controlled clock
+            SclStandardLib.UseVirtualTime = true;
+
+            // Initialize virtual clock to current real time if starting fresh
+            if (SclStandardLib.VirtualTickCount == 0)
+            {
+                SclStandardLib.VirtualTickCount = Environment.TickCount64;
+            }
+
+            int totalScans = Math.Max(1, milliseconds / scanIntervalMs);
+
+            lock (MemoryLock)
+            {
+                for (int i = 0; i < totalScans; i++)
+                {
+                    // Advance virtual clock by one scan interval BEFORE executing the scan
+                    SclStandardLib.VirtualTickCount += scanIntervalMs;
+
+                    _context.PrepareForNextScanCycle();
+                    _runner(_globals).Wait();
+                    CycleTimeTicks++;
+                }
+            }
+
+            // NOTE: We intentionally leave UseVirtualTime = true for the rest of the test session.
+            // This ensures subsequent "RUN 1 SCANS" commands also see consistent time progression.
+        }
+
+        /// <summary>
+        /// Call this when starting a new test session to reset the virtual clock.
+        /// </summary>
+        public void ResetVirtualTime()
+        {
+            SclStandardLib.UseVirtualTime = false;
+            SclStandardLib.VirtualTickCount = 0;
+        }
+
+
         public void Compile(string code, ExecutionContext context)
         {
             _context = context;
@@ -105,7 +173,7 @@ namespace SCL_Interface_Tool.Simulation
                 }
                 sw.Stop();
 
-                CycleTimeTicks = sw.ElapsedTicks; // High-resolution
+                CycleTimeTicks = sw.ElapsedTicks;
                 CycleTimeMs = (int)sw.ElapsedMilliseconds;
 
                 try { await Task.Delay(Math.Max(1, 10 - CycleTimeMs), token); }

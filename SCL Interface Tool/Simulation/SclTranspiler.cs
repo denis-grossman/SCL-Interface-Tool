@@ -1,9 +1,12 @@
-﻿using System;
+﻿using Microsoft.CodeAnalysis.CSharp.Scripting;
+using Microsoft.CodeAnalysis.Scripting;
+using SCL_Interface_Tool.Models;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
-using SCL_Interface_Tool.Models;
 using ExecutionContext = SCL_Interface_Tool.Simulation.ExecutionContext;
 
 namespace SCL_Interface_Tool.Simulation
@@ -75,6 +78,21 @@ namespace SCL_Interface_Tool.Simulation
             scl = Regex.Replace(scl, @"\(\*[\s\S]*?\*\)", "");
             scl = Regex.Replace(scl, @"//.*", "");
 
+            // --- Normalize Multi-line Control Statements to Single Lines ---
+            // RegexOptions.Singleline allows '.' to match newlines, fixing the IF...OR...THEN split bug
+            scl = Regex.Replace(scl, @"(?i)\b(IF|ELSIF)\b(.*?)\bTHEN\b", m =>
+                $"{m.Groups[1].Value.ToUpper()} {Regex.Replace(m.Groups[2].Value, @"\s+", " ")} THEN", RegexOptions.Singleline);
+
+            scl = Regex.Replace(scl, @"(?i)\b(WHILE)\b(.*?)\bDO\b", m =>
+                $"WHILE {Regex.Replace(m.Groups[2].Value, @"\s+", " ")} DO", RegexOptions.Singleline);
+
+            scl = Regex.Replace(scl, @"(?i)\b(CASE)\b(.*?)\bOF\b", m =>
+                $"CASE {Regex.Replace(m.Groups[2].Value, @"\s+", " ")} OF", RegexOptions.Singleline);
+
+            scl = Regex.Replace(scl, @"(?i)\b(FOR)\b(.*?)\bDO\b", m =>
+                $"FOR {Regex.Replace(m.Groups[2].Value, @"\s+", " ")} DO", RegexOptions.Singleline);
+            // -------------------------------------------------------------
+
             scl = Regex.Replace(scl, @"\b(\w+)\s*\(\s*IN\s*:=\s*(.+?)\s*,\s*PT\s*:=\s*(.+?)\s*\)\s*;", "$1.Execute($2, $3);", RegexOptions.IgnoreCase);
 
             scl = Regex.Replace(scl, @"\b(\w+)\s*\((\s*\w+\s*:=\s*.+?(?:\s*,\s*\w+\s*:=\s*.+?)*)\s*\)\s*;", m =>
@@ -142,73 +160,176 @@ namespace SCL_Interface_Tool.Simulation
 
             string[] lines = scl.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
             StringBuilder result = new StringBuilder();
-            bool insideCase = false, firstCaseLabel = true, repeatClosedByUntil = false;
+
+            // Tracking states using stacks completely resolves mismatched braces
+            Stack<string> blockStack = new Stack<string>();
+            Stack<bool> caseFirstLabelStack = new Stack<bool>();
+            bool repeatClosedByUntil = false;
 
             foreach (string rawLine in lines)
             {
                 string line = rawLine.Trim();
                 if (string.IsNullOrWhiteSpace(line)) { result.AppendLine(); continue; }
 
-                if (Regex.IsMatch(line, @"^\s*END_IF\s*;?\s*$", RegexOptions.IgnoreCase)) { result.AppendLine("}"); continue; }
-                if (Regex.IsMatch(line, @"^\s*END_WHILE\s*;?\s*$", RegexOptions.IgnoreCase)) { result.AppendLine("}"); continue; }
-                if (Regex.IsMatch(line, @"^\s*END_FOR\s*;?\s*$", RegexOptions.IgnoreCase)) { result.AppendLine("}"); continue; }
-                if (Regex.IsMatch(line, @"^\s*END_REPEAT\s*;?\s*$", RegexOptions.IgnoreCase)) { if (!repeatClosedByUntil) result.AppendLine("} while (true);"); repeatClosedByUntil = false; continue; }
-                if (Regex.IsMatch(line, @"^\s*END_CASE\s*;?\s*$", RegexOptions.IgnoreCase)) { if (insideCase) result.AppendLine("    break;"); result.AppendLine("}"); insideCase = false; firstCaseLabel = true; continue; }
+                // --- Handle Ending Keywords ---
+                if (Regex.IsMatch(line, @"^\s*END_IF\b\s*;?\s*$", RegexOptions.IgnoreCase))
+                {
+                    if (blockStack.Count > 0 && blockStack.Peek() == "IF") blockStack.Pop();
+                    result.AppendLine("}"); continue;
+                }
+                if (Regex.IsMatch(line, @"^\s*END_WHILE\b\s*;?\s*$", RegexOptions.IgnoreCase))
+                {
+                    if (blockStack.Count > 0 && blockStack.Peek() == "WHILE") blockStack.Pop();
+                    result.AppendLine("}"); continue;
+                }
+                if (Regex.IsMatch(line, @"^\s*END_FOR\b\s*;?\s*$", RegexOptions.IgnoreCase))
+                {
+                    if (blockStack.Count > 0 && blockStack.Peek() == "FOR") blockStack.Pop();
+                    result.AppendLine("}"); continue;
+                }
+                if (Regex.IsMatch(line, @"^\s*END_REPEAT\b\s*;?\s*$", RegexOptions.IgnoreCase))
+                {
+                    if (!repeatClosedByUntil) result.AppendLine("} while (true);");
+                    repeatClosedByUntil = false;
+                    if (blockStack.Count > 0 && blockStack.Peek() == "REPEAT") blockStack.Pop();
+                    continue;
+                }
+                if (Regex.IsMatch(line, @"^\s*END_CASE\b\s*;?\s*$", RegexOptions.IgnoreCase))
+                {
+                    if (blockStack.Count > 0 && blockStack.Peek().StartsWith("CASE|"))
+                    {
+                        blockStack.Pop();
+                        if (caseFirstLabelStack.Count > 0)
+                        {
+                            bool isFirst = caseFirstLabelStack.Pop();
+                            if (!isFirst) result.AppendLine("}"); // Closes the last case if/else block
+                        }
+                    }
+                    continue;
+                }
+
+                // --- Handle Starting/Middle Keywords ---
+                var ifMatch = Regex.Match(line, @"^\s*IF\b(.+)\bTHEN\s*$", RegexOptions.IgnoreCase);
+                if (ifMatch.Success) { blockStack.Push("IF"); result.AppendLine($"if ({ifMatch.Groups[1].Value.Trim()}) {{"); continue; }
 
                 var elsifMatch = Regex.Match(line, @"^\s*ELSIF\b(.+)\bTHEN\s*$", RegexOptions.IgnoreCase);
                 if (elsifMatch.Success) { result.AppendLine($"}} else if ({elsifMatch.Groups[1].Value.Trim()}) {{"); continue; }
 
-                if (Regex.IsMatch(line, @"^\s*ELSE\s*$", RegexOptions.IgnoreCase))
+                var elseMatch = Regex.Match(line, @"^\s*ELSE\b\s*(.*)$", RegexOptions.IgnoreCase);
+                if (elseMatch.Success)
                 {
-                    if (insideCase) { result.AppendLine("    break;"); result.AppendLine("default:"); } else { result.AppendLine("} else {"); }
+                    if (blockStack.Count > 0 && blockStack.Peek().StartsWith("CASE|"))
+                    {
+                        if (caseFirstLabelStack.Count > 0)
+                        {
+                            bool isFirst = caseFirstLabelStack.Pop();
+                            if (!isFirst) result.AppendLine("}");
+                            caseFirstLabelStack.Push(false);
+                        }
+                        result.AppendLine("else {");
+                    }
+                    else
+                    {
+                        result.AppendLine("} else {");
+                    }
+                    string remainder = elseMatch.Groups[1].Value.Trim();
+                    if (!string.IsNullOrEmpty(remainder)) result.AppendLine(remainder);
                     continue;
                 }
 
-                var ifMatch = Regex.Match(line, @"^\s*IF\b(.+)\bTHEN\s*$", RegexOptions.IgnoreCase);
-                if (ifMatch.Success) { result.AppendLine($"if ({ifMatch.Groups[1].Value.Trim()}) {{"); continue; }
-
                 var whileMatch = Regex.Match(line, @"^\s*WHILE\b(.+)\bDO\s*$", RegexOptions.IgnoreCase);
-                if (whileMatch.Success) { result.AppendLine($"while ({whileMatch.Groups[1].Value.Trim()}) {{"); continue; }
+                if (whileMatch.Success) { blockStack.Push("WHILE"); result.AppendLine($"while ({whileMatch.Groups[1].Value.Trim()}) {{"); continue; }
 
-                if (Regex.IsMatch(line, @"^\s*REPEAT\s*$", RegexOptions.IgnoreCase)) { repeatClosedByUntil = false; result.AppendLine("do {"); continue; }
+                if (Regex.IsMatch(line, @"^\s*REPEAT\s*$", RegexOptions.IgnoreCase)) { blockStack.Push("REPEAT"); repeatClosedByUntil = false; result.AppendLine("do {"); continue; }
 
                 var untilMatch = Regex.Match(line, @"^\s*UNTIL\b(.+?)(?:\bEND_REPEAT\b)?\s*;?\s*$", RegexOptions.IgnoreCase);
-                if (untilMatch.Success) { string condition = untilMatch.Groups[1].Value.Trim().TrimEnd(';'); result.AppendLine($"}} while (!({condition}));"); repeatClosedByUntil = true; continue; }
+                if (untilMatch.Success)
+                {
+                    string condition = untilMatch.Groups[1].Value.Trim().TrimEnd(';');
+                    result.AppendLine($"}} while (!({condition}));");
+                    repeatClosedByUntil = true;
+                    if (blockStack.Count > 0 && blockStack.Peek() == "REPEAT") blockStack.Pop();
+                    continue;
+                }
 
                 var forMatch = Regex.Match(line, @"^\s*FOR\b\s+(\w+)\s*:?=\s*(.+?)\s+TO\s+(.+?)(?:\s+BY\s+(.+?))?\s+DO\s*$", RegexOptions.IgnoreCase);
-                if (forMatch.Success) { string v = forMatch.Groups[1].Value, from = forMatch.Groups[2].Value, to = forMatch.Groups[3].Value, by = forMatch.Groups[4].Success ? forMatch.Groups[4].Value : "1"; result.AppendLine($"for ({v} = {from}; {v} <= {to}; {v} += {by}) {{"); continue; }
-
-                var caseMatch = Regex.Match(line, @"^\s*CASE\b(.+)\bOF\s*$", RegexOptions.IgnoreCase);
-                if (caseMatch.Success) { result.AppendLine($"switch ({caseMatch.Groups[1].Value.Trim()}) {{"); insideCase = true; firstCaseLabel = true; continue; }
-
-                if (insideCase)
+                if (forMatch.Success)
                 {
-                    var caseLabelMatch = Regex.Match(line, @"^\s*([\d]+(?:\s*(?:,|\.\.)\s*[\d]+)*)\s*:\s*$");
-                    if (caseLabelMatch.Success) { if (!firstCaseLabel) result.AppendLine("    break;"); firstCaseLabel = false; EmitCaseLabels(result, caseLabelMatch.Groups[1].Value); continue; }
-
-                    var caseInlineMatch = Regex.Match(line, @"^\s*([\d]+(?:\s*(?:,|\.\.)\s*[\d]+)*)\s*:\s*(.+)$");
-                    if (caseInlineMatch.Success) { if (!firstCaseLabel) result.AppendLine("    break;"); firstCaseLabel = false; EmitCaseLabels(result, caseInlineMatch.Groups[1].Value); result.AppendLine($"    {caseInlineMatch.Groups[2].Value.Trim()}"); continue; }
+                    blockStack.Push("FOR");
+                    string v = forMatch.Groups[1].Value, from = forMatch.Groups[2].Value, to = forMatch.Groups[3].Value, by = forMatch.Groups[4].Success ? forMatch.Groups[4].Value : "1";
+                    result.AppendLine($"for ({v} = {from}; {v} <= {to}; {v} += {by}) {{");
+                    continue;
                 }
+
+                // --- Handle CASE statements (Converted to dynamic if/else if) ---
+                var caseMatch = Regex.Match(line, @"^\s*CASE\b(.+)\bOF\s*$", RegexOptions.IgnoreCase);
+                if (caseMatch.Success)
+                {
+                    string switchVar = caseMatch.Groups[1].Value.Trim();
+                    blockStack.Push("CASE|" + switchVar);
+                    caseFirstLabelStack.Push(true);
+                    continue;
+                }
+
+                // Match CASE Labels internally based on the stored switch variable
+                if (blockStack.Count > 0 && blockStack.Peek().StartsWith("CASE|"))
+                {
+                    string switchVar = blockStack.Peek().Substring(5);
+
+                    var caseLabelMatch = Regex.Match(line, @"^\s*([\-\w]+(?:\s*(?:,|\.\.)\s*[\-\w]+)*)\s*:\s*$");
+                    if (caseLabelMatch.Success)
+                    {
+                        if (caseFirstLabelStack.Count > 0)
+                        {
+                            bool isFirst = caseFirstLabelStack.Pop();
+                            if (!isFirst) result.AppendLine("}");
+                            caseFirstLabelStack.Push(false);
+                            string cond = BuildCaseCondition(switchVar, caseLabelMatch.Groups[1].Value);
+                            result.AppendLine(isFirst ? $"if ({cond}) {{" : $"else if ({cond}) {{");
+                        }
+                        continue;
+                    }
+
+                    var caseInlineMatch = Regex.Match(line, @"^\s*([\-\w]+(?:\s*(?:,|\.\.)\s*[\-\w]+)*)\s*:\s*(.+)$");
+                    if (caseInlineMatch.Success)
+                    {
+                        if (caseFirstLabelStack.Count > 0)
+                        {
+                            bool isFirst = caseFirstLabelStack.Pop();
+                            if (!isFirst) result.AppendLine("}");
+                            caseFirstLabelStack.Push(false);
+                            string cond = BuildCaseCondition(switchVar, caseInlineMatch.Groups[1].Value);
+                            result.AppendLine(isFirst ? $"if ({cond}) {{" : $"else if ({cond}) {{");
+                            result.AppendLine($"    {caseInlineMatch.Groups[2].Value.Trim()}");
+                        }
+                        continue;
+                    }
+                }
+
                 result.AppendLine(line);
             }
             return result.ToString();
         }
 
-        private static void EmitCaseLabels(StringBuilder result, string labelText)
+        // Replace your old `EmitCaseLabels` entirely with this new helper method
+        private static string BuildCaseCondition(string switchVar, string labelText)
         {
+            var conditions = new System.Collections.Generic.List<string>();
             foreach (string part in Regex.Split(labelText, @"\s*,\s*"))
             {
-                var rangeMatch = Regex.Match(part.Trim(), @"^(\d+)\.\.(\d+)$");
+                var rangeMatch = Regex.Match(part.Trim(), @"^([\-\w]+)\.\.([\-\w]+)$");
                 if (rangeMatch.Success)
                 {
-                    for (int n = int.Parse(rangeMatch.Groups[1].Value); n <= int.Parse(rangeMatch.Groups[2].Value); n++) result.AppendLine($"case {n}:");
+                    conditions.Add($"({switchVar} >= {rangeMatch.Groups[1].Value} && {switchVar} <= {rangeMatch.Groups[2].Value})");
                 }
                 else
                 {
-                    result.AppendLine($"case {part.Trim()}:");
+                    conditions.Add($"({switchVar} == {part.Trim()})");
                 }
             }
+            return string.Join(" || ", conditions);
         }
+
 
         private static string GetCSharpType(string dt, ExecutionContext context)
         {
@@ -228,7 +349,8 @@ namespace SCL_Interface_Tool.Simulation
                 return "int[]";
             }
             if (context.StructDefinitions.ContainsKey(upper)) return "Dictionary<string, object>";
-            return "int"; // Fallback for INT, DINT, WORD, ENUM etc.
+            return "int";
         }
     }
+
 }

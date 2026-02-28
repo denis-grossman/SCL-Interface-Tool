@@ -1,4 +1,5 @@
-﻿using System;
+﻿// --- File: AutoTestRunner.cs ---
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
@@ -9,11 +10,21 @@ using SCL_Interface_Tool.Models;
 
 namespace SCL_Interface_Tool.Simulation
 {
+    public class TimingData
+    {
+        public List<double> Scans { get; set; } = new List<double>();
+        public Dictionary<string, List<double>> Signals { get; set; } = new Dictionary<string, List<double>>();
+        public Dictionary<string, bool> IsDigital { get; set; } = new Dictionary<string, bool>();
+    }
+
     public class AutoTestRunner
     {
         private ExecutionContext _context;
         private SimulationEngine _engine;
         private Action<string, Color, bool> _log;
+
+        public TimingData RecordedData { get; private set; }
+        private int _currentScan;
 
         public AutoTestRunner(ExecutionContext context, SimulationEngine engine, Action<string, Color, bool> logCallback)
         {
@@ -24,8 +35,17 @@ namespace SCL_Interface_Tool.Simulation
 
         public async Task RunScriptAsync(string script)
         {
+            // =====================================================================
+            // FIX: Properly initialize virtual time for the entire test session.
+            // We start from a known base so all TON/TOF/TP timers see consistent
+            // monotonically increasing time values across all RUN commands.
+            // =====================================================================
             SclStandardLib.UseVirtualTime = true;
-            SclStandardLib.VirtualTickCount = 0;
+            SclStandardLib.VirtualTickCount = Environment.TickCount64;
+
+            RecordedData = new TimingData();
+            _currentScan = 0;
+            RecordAnalyzerState();
 
             string[] lines = script.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
             int passCount = 0;
@@ -67,15 +87,45 @@ namespace SCL_Interface_Tool.Simulation
 
                             if (type == "MS")
                             {
-                                SclStandardLib.VirtualTickCount += count;
-                                _engine.StepScans(1); // Execute 1 scan so timers evaluate the new time
+                                // ==========================================================
+                                // FIX: Use StepTime which runs multiple scans at 10ms
+                                // intervals, properly advancing virtual time per scan.
+                                // This allows TON/TOF/TP timers to accumulate ET correctly
+                                // and trigger intermediate state changes during the window.
+                                // ==========================================================
+                                int scanIntervalMs = 10;
+                                int totalScans = Math.Max(1, count / scanIntervalMs);
+
+                                // We manually step and record per-scan for the chart
+                                lock (_engine.MemoryLock)
+                                {
+                                    for (int i = 0; i < totalScans; i++)
+                                    {
+                                        SclStandardLib.VirtualTickCount += scanIntervalMs;
+                                        _engine.StepScans(1);
+                                        _currentScan++;
+
+                                        // Record every Nth scan to keep chart data manageable
+                                        // For large time windows (>1s), sample every 10 scans
+                                        if (totalScans <= 100 || i % 10 == 0 || i == totalScans - 1)
+                                        {
+                                            RecordAnalyzerState();
+                                        }
+                                    }
+                                }
                             }
                             else
                             {
-                                _engine.StepScans(count);
+                                // RUN X SCANS — StepScans already advances virtual time
+                                // when UseVirtualTime is true (10ms per scan)
+                                for (int i = 0; i < count; i++)
+                                {
+                                    _engine.StepScans(1);
+                                    _currentScan++;
+                                    RecordAnalyzerState();
+                                }
                             }
 
-                            // Calculate and print Delta
                             var postState = TakeMemorySnapshot();
                             LogDelta(preState, postState);
                         }
@@ -85,10 +135,10 @@ namespace SCL_Interface_Tool.Simulation
                             if (!match.Success) throw new Exception("Invalid ASSERT syntax.");
 
                             string path = match.Groups[1].Value;
-                            string expected = match.Groups[2].Value;
+                            string expected = match.Groups[2].Value.Trim();
                             string actual = GetMemoryValue(path);
 
-                            if (actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
+                            if (CompareValues(actual, expected))
                             {
                                 _log($"  ▶ PASS ({actual})", Color.LimeGreen, true);
                                 passCount++;
@@ -108,16 +158,98 @@ namespace SCL_Interface_Tool.Simulation
                     {
                         _log($"  ▶ ERROR: {ex.Message}", Color.Red, true);
                         failCount++;
-                        break; // Stop test on syntax/execution error
+                        break;
                     }
                 }
             });
 
+            RecordAnalyzerState();
+
             _log($"\n=== TEST COMPLETED: {passCount} PASSED, {failCount} FAILED ===\n", failCount == 0 ? Color.LimeGreen : Color.Red, true);
-            SclStandardLib.UseVirtualTime = false; // Reset clock for live simulation
+
+            // =====================================================================
+            // FIX: Reset virtual time after test completes so that live simulation
+            // (▶ Start button) uses real wall-clock time and timers work correctly.
+            // This also prevents stale virtual time from leaking into manual Step
+            // or into a second SimulationForm window for a different block.
+            // =====================================================================
+            SclStandardLib.UseVirtualTime = false;
+            SclStandardLib.VirtualTickCount = 0;
         }
 
-        // --- Memory Access Helpers ---
+        /// <summary>
+        /// Robust value comparison that handles case-insensitive booleans,
+        /// integer formatting differences, and float tolerance.
+        /// </summary>
+        private bool CompareValues(string actual, string expected)
+        {
+            if (actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            // Handle boolean synonyms: "True"/"1", "False"/"0"
+            if ((actual.Equals("True", StringComparison.OrdinalIgnoreCase) && expected == "1") ||
+                (actual.Equals("False", StringComparison.OrdinalIgnoreCase) && expected == "0") ||
+                (actual == "1" && expected.Equals("True", StringComparison.OrdinalIgnoreCase)) ||
+                (actual == "0" && expected.Equals("False", StringComparison.OrdinalIgnoreCase)))
+                return true;
+
+            // Handle float comparison with tolerance (e.g., "3.14" vs "3.14")
+            if (float.TryParse(actual, NumberStyles.Float, CultureInfo.InvariantCulture, out float fActual) &&
+                float.TryParse(expected, NumberStyles.Float, CultureInfo.InvariantCulture, out float fExpected))
+            {
+                return Math.Abs(fActual - fExpected) < 0.01f;
+            }
+
+            return false;
+        }
+
+        private void RecordAnalyzerState()
+        {
+            lock (_engine.MemoryLock)
+            {
+                if (RecordedData.Scans.Count > 0 && RecordedData.Scans.Last() == _currentScan)
+                    return;
+
+                RecordedData.Scans.Add(_currentScan);
+
+                Action<string, object> recordValue = (name, val) =>
+                {
+                    if (val is bool b)
+                    {
+                        if (!RecordedData.Signals.ContainsKey(name)) { RecordedData.Signals[name] = new List<double>(); RecordedData.IsDigital[name] = true; }
+                        RecordedData.Signals[name].Add(b ? 1.0 : 0.0);
+                    }
+                    else if (val is IConvertible conv)
+                    {
+                        try
+                        {
+                            double d = conv.ToDouble(CultureInfo.InvariantCulture);
+                            if (!RecordedData.Signals.ContainsKey(name)) { RecordedData.Signals[name] = new List<double>(); RecordedData.IsDigital[name] = false; }
+                            RecordedData.Signals[name].Add(d);
+                        }
+                        catch { }
+                    }
+                };
+
+                foreach (var m in _context.Memory.Values)
+                {
+                    if (m.Direction == ElementDirection.Member) continue;
+
+                    if (m.CurrentValue is Array arr)
+                    {
+                        for (int i = 0; i < arr.Length; i++) recordValue($"{m.Name}[{i}]", arr.GetValue(i));
+                    }
+                    else if (m.CurrentValue is Dictionary<string, object> dict)
+                    {
+                        foreach (var kvp in dict) recordValue($"{m.Name}.{kvp.Key}", kvp.Value);
+                    }
+                    else
+                    {
+                        recordValue(m.Name, m.CurrentValue);
+                    }
+                }
+            }
+        }
 
         private void SetMemoryValue(string path, string valStr)
         {
@@ -170,7 +302,7 @@ namespace SCL_Interface_Tool.Simulation
             {
                 foreach (var m in _context.Memory.Values)
                 {
-                    if (m.Direction == ElementDirection.Member || m.Direction == ElementDirection.Input) continue; // Only track Outputs, Statics, InOuts
+                    if (m.Direction == ElementDirection.Member || m.Direction == ElementDirection.Input) continue;
 
                     if (m.CurrentValue is Array arr)
                     {

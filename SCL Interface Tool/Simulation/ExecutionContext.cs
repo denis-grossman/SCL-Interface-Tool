@@ -1,8 +1,15 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
+using System.Reflection;
+using System.Text;
 using System.Text.RegularExpressions;
-using SCL_Interface_Tool.Models;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.CodeAnalysis.CSharp.Scripting;
+using Microsoft.CodeAnalysis.Scripting;
+using SCL_Interface_Tool.Models; // Ensure this matches your project's model namespace
 
 namespace SCL_Interface_Tool.Simulation
 {
@@ -31,7 +38,6 @@ namespace SCL_Interface_Tool.Simulation
         public Dictionary<string, Dictionary<string, int>> EnumDefinitions { get; }
         public Dictionary<string, Dictionary<string, string>> StructDefinitions { get; }
 
-        // Added fullSclText parameter to parse TYPE definitions BEFORE creating memory
         public ExecutionContext(SclBlock parsedBlock, string fullSclText)
         {
             BlockName = parsedBlock.Name;
