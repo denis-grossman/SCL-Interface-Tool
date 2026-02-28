@@ -4,6 +4,7 @@ using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Linq;
+using System.Collections.Generic;
 
 namespace SCL_Interface_Tool.ImageGeneration
 {
@@ -11,14 +12,16 @@ namespace SCL_Interface_Tool.ImageGeneration
     {
         public Bitmap GenerateImage(SclBlock block, bool showComments)
         {
+            // FIX 1: Add InOut variables to the left side (Inputs first, then InOuts)
             var inputs = block.Elements.Where(e => e.Direction == ElementDirection.Input).ToList();
+            inputs.AddRange(block.Elements.Where(e => e.Direction == ElementDirection.InOut));
+
             var outputs = block.Elements.Where(e => e.Direction == ElementDirection.Output).ToList();
 
             // Fonts initialized early so we can measure text width
             Font fbNumFont = new Font("Segoe UI", 9.5f, FontStyle.Bold);
             Font fbNameFont = new Font("Segoe UI", 9f, FontStyle.Regular);
             Font pinFont = new Font("Segoe UI", 9f, FontStyle.Regular);
-            Font valFont = new Font("Segoe UI", 8f, FontStyle.Regular);
             Font commentFont = new Font("Segoe UI", 8.5f, FontStyle.Italic);
 
             // Layout Constants
@@ -52,7 +55,7 @@ namespace SCL_Interface_Tool.ImageGeneration
                 {
                     int requiredHeight = minRowHeight;
 
-                    // Measure Input Pins (Left)
+                    // Measure Input / InOut Pins (Left)
                     if (r > 0 && r - 1 < inputs.Count)
                     {
                         var input = inputs[r - 1];
@@ -165,7 +168,7 @@ namespace SCL_Interface_Tool.ImageGeneration
                     g.DrawString("...", pinFont, Brushes.Black, startX - lineLength - 16, enYPos - 12);
                     g.DrawString("EN", pinFont, Brushes.Black, startX + 5, enYPos - 8);
 
-                    // Inputs
+                    // Inputs and InOuts
                     for (int i = 0; i < inputs.Count; i++)
                     {
                         var el = inputs[i];
@@ -173,13 +176,14 @@ namespace SCL_Interface_Tool.ImageGeneration
 
                         g.DrawLine(linePen, startX - lineLength, yPos, startX, yPos);
                         g.DrawString("...", pinFont, Brushes.Black, startX - lineLength - 16, yPos - 12);
-                        g.FillEllipse(Brushes.DodgerBlue, startX - lineLength - 3, yPos - 3, 6, 6);
+
+                        // FIX: Use a purple dot for InOut, blue for Input
+                        Brush pinBrush = el.Direction == ElementDirection.InOut ? Brushes.MediumPurple : Brushes.DodgerBlue;
+                        g.FillEllipse(pinBrush, startX - lineLength - 3, yPos - 3, 6, 6);
+
                         g.DrawString(el.Name, pinFont, Brushes.Black, startX + 5, yPos - 8);
 
-                        if (!string.IsNullOrEmpty(el.InitialValue))
-                        {
-                            g.DrawString(el.InitialValue, valFont, Brushes.DimGray, startX - lineLength, yPos - 18);
-                        }
+                        // FIX 2: Completely removed the code that drew el.InitialValue
 
                         if (showComments && !string.IsNullOrWhiteSpace(el.Comment))
                         {
@@ -204,10 +208,7 @@ namespace SCL_Interface_Tool.ImageGeneration
                         g.FillEllipse(Brushes.LimeGreen, startX + blockWidth + lineLength - 3, yPos - 3, 6, 6);
                         g.DrawString(el.Name, pinFont, Brushes.Black, startX + blockWidth - 5, yPos - 8, rightFormat);
 
-                        if (!string.IsNullOrEmpty(el.InitialValue))
-                        {
-                            g.DrawString(el.InitialValue, valFont, Brushes.DimGray, startX + blockWidth + 5, yPos - 18);
-                        }
+                        // FIX 2: Completely removed the code that drew el.InitialValue
 
                         if (showComments && !string.IsNullOrWhiteSpace(el.Comment))
                         {
@@ -235,8 +236,7 @@ namespace SCL_Interface_Tool.ImageGeneration
             fbNumFont.Dispose();
             fbNameFont.Dispose();
             pinFont.Dispose();
-            valFont.Dispose();
-            commentFont.Dispose();
+            commentFont.Dispose(); // valFont removed since initial values are gone
 
             return bmp;
         }

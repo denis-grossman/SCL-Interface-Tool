@@ -301,9 +301,11 @@ namespace SCL_Interface_Tool
         private void PbLive_Paint(object sender, PaintEventArgs e)
         {
             if (_engine == null || _context == null) return;
-            Graphics g = e.Graphics; g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            Graphics g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             using Font valFont = new Font("Consolas", 8, FontStyle.Bold);
 
+            // Draw status badge
             if (_engine.IsRunning && !_engine.IsPaused) { g.FillRectangle(Brushes.LimeGreen, 10, 10, 70, 18); g.DrawString("RUNNING", valFont, Brushes.White, 14, 12); }
             else if (_engine.IsPaused) { g.FillRectangle(Brushes.DarkOrange, 10, 10, 70, 18); g.DrawString("PAUSED", valFont, Brushes.White, 16, 12); }
             else { g.FillRectangle(Brushes.Crimson, 10, 10, 70, 18); g.DrawString("STOPPED", valFont, Brushes.White, 13, 12); }
@@ -322,20 +324,57 @@ namespace SCL_Interface_Tool
                     else txt = mem.CurrentValue.ToString();
 
                     SizeF textSize = g.MeasureString(txt, valFont);
-                    int tagWidth = (int)textSize.Width + 6;
-                    int yPos = el.DisplayBounds.Y + (el.DisplayBounds.Height / 2) - 9;
-                    int xPos = (el.Direction == ElementDirection.Input || el.Direction == ElementDirection.InOut) ? el.DisplayBounds.Right - 45 - tagWidth : el.DisplayBounds.Left + 45;
-                    RectangleF tagRect = new RectangleF(xPos, yPos, tagWidth, 16);
+                    int minBoxWidth = (int)g.MeasureString("FALSE", valFont).Width + 10;
+                    int tagWidth = Math.Max((int)textSize.Width + 8, minBoxWidth);
 
+                    int yCenter = el.DisplayBounds.Y + (el.DisplayBounds.Height / 2);
+                    int yPos = yCenter - 8; // Tag height is 16, so -8 centers it
+
+                    RectangleF tagRect;
+
+                    if (el.Direction == ElementDirection.Input || el.Direction == ElementDirection.InOut)
+                    {
+                        int rightEdge = el.DisplayBounds.Right - 45;
+
+                        // 1. THE ABSOLUTE ERASER: Scrub a 55x30px white area clean
+                        g.FillRectangle(Brushes.White, rightEdge - 50, yCenter - 15, 55, 30);
+
+                        // 2. REDRAW THE WIRE: Put the connection line back
+                        g.DrawLine(Pens.Black, rightEdge - 50, yCenter, rightEdge + 5, yCenter);
+
+                        // 3. Define Tag Position
+                        tagRect = new RectangleF(rightEdge - tagWidth, yPos, tagWidth, 16);
+                    }
+                    else // Outputs
+                    {
+                        int leftEdge = el.DisplayBounds.Left + 45;
+
+                        // 1. THE ABSOLUTE ERASER: Scrub a 55x30px white area clean
+                        g.FillRectangle(Brushes.White, leftEdge - 5, yCenter - 15, 55, 30);
+
+                        // 2. REDRAW THE WIRE: Put the connection line back
+                        g.DrawLine(Pens.Black, leftEdge - 5, yCenter, leftEdge + 50, yCenter);
+
+                        // 3. Define Tag Position
+                        tagRect = new RectangleF(leftEdge, yPos, tagWidth, 16);
+                    }
+
+                    // Draw Tag Background
                     Brush bgBrush = Brushes.WhiteSmoke;
                     if (mem.CurrentValue is bool b2) bgBrush = b2 ? Brushes.LightGreen : Brushes.LightGray;
                     else bgBrush = Brushes.LightCyan;
 
-                    g.FillRectangle(bgBrush, tagRect); g.DrawRectangle(Pens.Gray, tagRect.X, tagRect.Y, tagRect.Width, tagRect.Height);
-                    g.DrawString(txt, valFont, Brushes.Black, tagRect.X + 3, tagRect.Y + 2);
+                    g.FillRectangle(bgBrush, tagRect);
+                    g.DrawRectangle(Pens.Gray, tagRect.X, tagRect.Y, tagRect.Width, tagRect.Height);
+
+                    // Draw Centered Text
+                    float textX = tagRect.X + (tagRect.Width - textSize.Width) / 2;
+                    g.DrawString(txt, valFont, Brushes.Black, textX, tagRect.Y + 2);
                 }
             }
         }
+
+
 
         private void RestartSimulation()
         {
